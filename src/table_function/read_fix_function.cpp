@@ -145,11 +145,18 @@ static unique_ptr<FunctionData> ReadFixBind(ClientContext &context, TableFunctio
 
 	// Expand glob patterns using DuckDB FileSystem
 	auto &fs = FileSystem::GetFileSystem(context);
-	auto file_list = fs.GlobFiles(file_path, context, FileGlobOptions::DISALLOW_EMPTY);
 
-	// Extract file paths from OpenFileInfo objects
-	for (auto &file_info : file_list) {
-		result->files.push_back(file_info.path);
+	// Handle special paths like /dev/stdin that don't work with glob expansion
+	if (file_path == "/dev/stdin" || file_path == "-" || file_path.rfind("/dev/fd/", 0) == 0) {
+		// Special device files - bypass glob and use directly
+		result->files.push_back(file_path);
+	} else {
+		auto file_list = fs.GlobFiles(file_path, context, FileGlobOptions::DISALLOW_EMPTY);
+
+		// Extract file paths from OpenFileInfo objects
+		for (auto &file_info : file_list) {
+			result->files.push_back(file_info.path);
+		}
 	}
 
 	// Load FIX dictionary for group parsing and custom tag validation
