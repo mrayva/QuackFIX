@@ -151,7 +151,7 @@ static unique_ptr<FunctionData> ReadFixBind(ClientContext &context, TableFunctio
 		// Special device files - bypass glob and use directly
 		result->files.push_back(file_path);
 	} else {
-		auto file_list = fs.GlobFiles(file_path, context, FileGlobOptions::DISALLOW_EMPTY);
+		auto file_list = fs.GlobFiles(file_path, duckdb::FileGlobInput(duckdb::FileGlobOptions::DISALLOW_EMPTY));
 
 		// Extract file paths from OpenFileInfo objects
 		for (auto &file_info : file_list) {
