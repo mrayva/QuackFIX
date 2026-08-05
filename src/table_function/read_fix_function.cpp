@@ -61,17 +61,13 @@ struct ReadFixGlobalState : public GlobalTableFunctionState {
 	}
 
 	bool IsColumnNeeded(idx_t col_idx) const {
-		// Column is needed if it's in projection_ids or column_indexes (filter columns)
-		if (projection_ids.empty()) {
-			return true; // No projection pushdown, need all columns
-		}
-		// Check if in projection
-		for (auto proj_id : projection_ids) {
-			if (proj_id == col_idx) {
-				return true;
-			}
-		}
-		// Check if in column_indexes (includes filter columns)
+		// column_indexes is the authoritative list of schema columns the scan must produce
+		// (both projected columns and filter-only columns). projection_ids holds *positions*
+		// within column_indexes for the columns that survive past the scan, not schema column
+		// indices, so it can't be compared against col_idx directly - and an empty
+		// projection_ids doesn't mean "no pushdown", it can just as well mean "nothing needs to
+		// survive the scan" (e.g. a bare COUNT(*)), so it must not short-circuit to "need
+		// everything" here.
 		for (idx_t i = 0; i < column_indexes.size(); i++) {
 			if (column_indexes[i].GetPrimaryIndex() == col_idx) {
 				return true;
@@ -469,7 +465,7 @@ void FixColumnWriter::WriteGroupsMap(const ParsedFixMessage &parsed) {
 		return;
 	}
 
-	Value groups_value = FixGroupParser::ParseGroups(parsed, *bind_data.dictionary, gstate.needs_groups);
+	Value groups_value = FixGroupParser::ParseGroups(parsed, *bind_data.dictionary, gstate.needs_groups, conversion_errors);
 	output.data[out_idx].SetValue(row_idx, groups_value);
 }
 

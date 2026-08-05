@@ -5,6 +5,12 @@
 
 namespace duckdb {
 
+namespace {
+// Sanity bound on repeating group counts - protects against corrupted/malicious
+// NoXXX count fields causing runaway parsing.
+constexpr int kMaxGroupCount = 100;
+} // namespace
+
 bool FixGroupParser::IsGroupField(int tag, const std::vector<int> &group_field_tags) {
 	for (int gf : group_field_tags) {
 		if (tag == gf) {
@@ -15,23 +21,28 @@ bool FixGroupParser::IsGroupField(int tag, const std::vector<int> &group_field_t
 }
 
 int FixGroupParser::GetGroupCount(const std::unordered_map<int, ParsedFixMessage::TagValue> &other_tags,
-                                  int count_tag) {
+                                  int count_tag, std::vector<std::string> &errors) {
 	auto tag_it = other_tags.find(count_tag);
 	if (tag_it == other_tags.end()) {
 		return 0; // Group not present
 	}
 
+	std::string count_str(tag_it->second.data, tag_it->second.len);
 	try {
-		std::string count_str(tag_it->second.data, tag_it->second.len);
 		int count = std::stoi(count_str);
 
-		// Sanity check: reject invalid or excessive counts
-		if (count <= 0 || count > 100) {
+		if (count <= 0) {
+			return 0;
+		}
+		if (count > kMaxGroupCount) {
+			errors.push_back("Group tag " + std::to_string(count_tag) + " count " + std::to_string(count) +
+			                 " exceeds maximum of " + std::to_string(kMaxGroupCount) + "; group dropped");
 			return 0;
 		}
 
 		return count;
 	} catch (...) {
+		errors.push_back("Group tag " + std::to_string(count_tag) + " has invalid count value: '" + count_str + "'");
 		return 0; // Invalid count
 	}
 }
@@ -46,11 +57,67 @@ size_t FixGroupParser::FindCountTagPosition(const std::vector<std::pair<int, Par
 	return ordered_tags.size(); // Not found
 }
 
+size_t FixGroupParser::SkipGroupSpan(const std::vector<std::pair<int, ParsedFixMessage::TagValue>> &ordered_tags,
+                                     size_t pos, const FixGroupDef &group_def) {
+	// pos points at the group's count tag. Its value must be read directly from this
+	// occurrence in the ordered stream, not via other_tags, since a tag number repeated
+	// across instances only keeps its last value in that map.
+	int count = 0;
+	if (pos < ordered_tags.size()) {
+		try {
+			const auto &count_value = ordered_tags[pos].second;
+			count = std::stoi(std::string(count_value.data, count_value.len));
+		} catch (...) {
+			count = 0;
+		}
+	}
+	pos++; // move past the count tag itself
+
+	if (count <= 0 || count > kMaxGroupCount) {
+		return pos;
+	}
+
+	for (int instance = 0; instance < count && pos < ordered_tags.size(); instance++) {
+		bool consumed_any = false;
+
+		while (pos < ordered_tags.size()) {
+			int tag = ordered_tags[pos].first;
+
+			auto sub_it = group_def.subgroups.find(tag);
+			if (sub_it != group_def.subgroups.end()) {
+				pos = SkipGroupSpan(ordered_tags, pos, *sub_it->second);
+				consumed_any = true;
+				continue;
+			}
+
+			if (!IsGroupField(tag, group_def.field_tags)) {
+				break;
+			}
+
+			pos++;
+			consumed_any = true;
+
+			if (pos < ordered_tags.size() && !group_def.field_tags.empty() &&
+			    ordered_tags[pos].first == group_def.field_tags[0]) {
+				break;
+			}
+		}
+
+		if (!consumed_any) {
+			// Nothing recognized for this instance; avoid spinning without progress.
+			break;
+		}
+	}
+
+	return pos;
+}
+
 vector<Value>
 FixGroupParser::ParseGroupInstances(const std::vector<std::pair<int, ParsedFixMessage::TagValue>> &ordered_tags,
-                                    size_t start_pos, int group_count, const std::vector<int> &group_field_tags) {
+                                    size_t start_pos, int group_count, const FixGroupDef &group_def) {
 	vector<Value> group_instances;
 	size_t pos = start_pos;
+	const auto &group_field_tags = group_def.field_tags;
 
 	for (int instance = 0; instance < group_count && pos < ordered_tags.size(); instance++) {
 		// Parse one group instance
@@ -59,6 +126,15 @@ FixGroupParser::ParseGroupInstances(const std::vector<std::pair<int, ParsedFixMe
 		// Collect tags that belong to this group instance
 		while (pos < ordered_tags.size()) {
 			int tag = ordered_tags[pos].first;
+
+			// A nested subgroup within this instance - its content isn't exposed in the
+			// `groups` column yet, but its span must still be skipped so later fields and
+			// instances of the outer group don't get misaligned.
+			auto sub_it = group_def.subgroups.find(tag);
+			if (sub_it != group_def.subgroups.end()) {
+				pos = SkipGroupSpan(ordered_tags, pos, *sub_it->second);
+				continue;
+			}
 
 			// Check if this tag belongs to the current group
 			if (!IsGroupField(tag, group_field_tags)) {
@@ -93,7 +169,8 @@ FixGroupParser::ParseGroupInstances(const std::vector<std::pair<int, ParsedFixMe
 	return group_instances;
 }
 
-Value FixGroupParser::ParseGroups(const ParsedFixMessage &parsed, const FixDictionary &dict, bool needs_groups) {
+Value FixGroupParser::ParseGroups(const ParsedFixMessage &parsed, const FixDictionary &dict, bool needs_groups,
+                                  std::vector<std::string> &errors) {
 	// Early exit optimization - groups not requested
 	if (!needs_groups) {
 		return Value(); // NULL
@@ -119,14 +196,12 @@ Value FixGroupParser::ParseGroups(const ParsedFixMessage &parsed, const FixDicti
 	// Iterate through all groups defined for this message type
 	for (const auto &[count_tag, group_def] : message_def.groups) {
 		// Check if this group exists in the message
-		int group_count = GetGroupCount(parsed.other_tags, count_tag);
+		int group_count = GetGroupCount(parsed.other_tags, count_tag, errors);
 		if (group_count == 0) {
 			continue; // Group not present or invalid count
 		}
 
-		// Get field tags from dictionary (dereference shared_ptr)
-		const std::vector<int> &group_field_tags = group_def->field_tags;
-		if (group_field_tags.empty()) {
+		if (group_def->field_tags.empty()) {
 			continue; // No fields defined for this group
 		}
 
@@ -138,7 +213,7 @@ Value FixGroupParser::ParseGroups(const ParsedFixMessage &parsed, const FixDicti
 
 		// Parse group instances from ordered tags starting after count tag
 		auto group_instances =
-		    ParseGroupInstances(parsed.all_tags_ordered, count_tag_pos + 1, group_count, group_field_tags);
+		    ParseGroupInstances(parsed.all_tags_ordered, count_tag_pos + 1, group_count, *group_def);
 
 		if (!group_instances.empty()) {
 			// Create outer map entry for this group
