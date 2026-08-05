@@ -30,7 +30,7 @@ struct FixFieldsGlobalState : public GlobalTableFunctionState {
 };
 
 static unique_ptr<FunctionData> FixFieldsBind(ClientContext &context, TableFunctionBindInput &input,
-                                              vector<LogicalType> &return_types, vector<string> &names) {
+                                              vector<LogicalType> &return_types, vector<Identifier> &names) {
 	auto result = make_uniq<FixFieldsBindData>();
 
 	// Load FIX dictionary - use embedded by default, or custom path if provided
@@ -192,7 +192,7 @@ static void AddGroupFields(const FixGroupDef &group_def, const string &msgtype, 
 }
 
 static unique_ptr<FunctionData> FixMessageFieldsBind(ClientContext &context, TableFunctionBindInput &input,
-                                                     vector<LogicalType> &return_types, vector<string> &names) {
+                                                     vector<LogicalType> &return_types, vector<Identifier> &names) {
 	auto result = make_uniq<FixMessageFieldsBindData>();
 
 	// Load FIX dictionary - use embedded by default, or custom path if provided
@@ -384,7 +384,7 @@ static void CollectGroups(const FixGroupDef &group_def, int count_tag, const str
 }
 
 static unique_ptr<FunctionData> FixGroupsBind(ClientContext &context, TableFunctionBindInput &input,
-                                              vector<LogicalType> &return_types, vector<string> &names) {
+                                              vector<LogicalType> &return_types, vector<Identifier> &names) {
 	auto result = make_uniq<FixGroupsBindData>();
 
 	// Load FIX dictionary - use embedded by default, or custom path if provided
