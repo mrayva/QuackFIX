@@ -631,7 +631,7 @@ static void ReadFixScan(ClientContext &context, TableFunctionInput &data_p, Data
 		auto &fs = FileSystem::GetFileSystem(context);
 		if (!lstate.file_reader.OpenNextFile(fs, bind_data.files, gstate.file_index, gstate.lock)) {
 			// No more files
-			output.SetCardinality(0);
+			output.SetChildCardinality(0);
 			return;
 		}
 	}
@@ -678,7 +678,7 @@ static void ReadFixScan(ClientContext &context, TableFunctionInput &data_p, Data
 		output_idx++;
 	}
 
-	output.SetCardinality(output_idx);
+	output.SetChildCardinality(output_idx);
 }
 
 // Get the table function definition

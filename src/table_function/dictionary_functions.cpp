@@ -129,7 +129,7 @@ static void FixFieldsScan(ClientContext &context, TableFunctionInput &data_p, Da
 		gstate.current_idx++;
 	}
 
-	output.SetCardinality(output_idx);
+	output.SetChildCardinality(output_idx);
 }
 
 TableFunction FixFieldsFunction::GetFunction() {
@@ -312,7 +312,7 @@ static void FixMessageFieldsScan(ClientContext &context, TableFunctionInput &dat
 		gstate.current_idx++;
 	}
 
-	output.SetCardinality(output_idx);
+	output.SetChildCardinality(output_idx);
 }
 
 TableFunction FixMessageFieldsFunction::GetFunction() {
@@ -490,7 +490,7 @@ static void FixGroupsScan(ClientContext &context, TableFunctionInput &data_p, Da
 		gstate.current_idx++;
 	}
 
-	output.SetCardinality(output_idx);
+	output.SetChildCardinality(output_idx);
 }
 
 TableFunction FixGroupsFunction::GetFunction() {
