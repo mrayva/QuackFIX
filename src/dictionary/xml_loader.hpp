@@ -17,6 +17,9 @@ public:
 	static void ApplyOverlay(duckdb::ClientContext &context, FixDictionary &dict, const std::string &path);
 
 private:
+	// Loads <fields>/<components>/<messages> from an already-parsed document; shared by
+	// LoadFromString and LoadBase, which differ only in how they obtain the XML text.
+	static void LoadFromDocument(FixDictionary &dict, tinyxml2::XMLDocument &doc);
 	static void LoadFields(FixDictionary &dict, tinyxml2::XMLElement *fields_root);
 	static void LoadComponents(FixDictionary &dict, tinyxml2::XMLElement *components_root);
 	static void LoadMessages(FixDictionary &dict, tinyxml2::XMLElement *messages_root);

@@ -118,7 +118,12 @@ bool FixTokenizer::ParseTag(const char *tag_str, size_t tag_len, const char *val
 		msg.text_len = value_len;
 		break;
 	default:
-		// Store in other_tags map
+		// Store in other_tags map. A duplicate tag number silently overwrites the earlier
+		// value here (and for hot tags, above). This is intentional: the same tag number
+		// repeating is the normal shape of a FIX repeating group (see all_tags_ordered,
+		// which keeps every occurrence for FixGroupParser), so flagging duplicates here
+		// without dictionary/group awareness would misreport valid group messages as
+		// malformed.
 		msg.other_tags[tag] = {value, value_len};
 		break;
 	}
@@ -137,7 +142,11 @@ bool FixTokenizer::Parse(const char *input, size_t input_len, ParsedFixMessage &
 		return false;
 	}
 
-	// Find where "8=" starts (beginning of actual FIX message)
+	// Find where "8=" starts (beginning of actual FIX message).
+	// This takes the first literal "8=" in the line; if extract_prefix is used and the
+	// prefix itself happens to contain that substring (e.g. a timestamp or log field that
+	// spells it out), the prefix/message split will be wrong. Fine for typical log-line
+	// prefixes, but not a guaranteed-correct anchor.
 	size_t fix_start = 0;
 	bool found_fix_start = false;
 

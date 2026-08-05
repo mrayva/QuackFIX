@@ -7,7 +7,8 @@
 namespace duckdb {
 
 // Helper class for reading FIX log files line by line
-// Handles buffering and various line ending formats (\n, \r\n, \r)
+// Handles buffering and \n / \r\n line endings (bare \r-only endings, i.e. old
+// classic-Mac style, are not split - such a file would be read as one long line)
 class FixFileReader {
 public:
 	FixFileReader();
@@ -18,7 +19,7 @@ public:
 
 	// Read the next line from the current file
 	// Returns true if a line was read, false if end of file reached
-	// Line endings (\n, \r\n, \r) are automatically stripped
+	// \n and \r\n line endings are automatically stripped
 	bool ReadLine(string &line);
 
 	// Get current file path

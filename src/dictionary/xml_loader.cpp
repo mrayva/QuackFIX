@@ -4,15 +4,7 @@
 #include <stdexcept>
 #include <iostream>
 
-FixDictionary FixDictionaryLoader::LoadFromString(const std::string &xml_content) {
-	FixDictionary dict;
-	tinyxml2::XMLDocument doc;
-
-	// Parse XML from string
-	if (doc.Parse(xml_content.c_str()) != tinyxml2::XML_SUCCESS) {
-		throw std::runtime_error("Failed to parse dictionary XML from string");
-	}
-
+void FixDictionaryLoader::LoadFromDocument(FixDictionary &dict, tinyxml2::XMLDocument &doc) {
 	auto *root = doc.RootElement();
 	if (!root) {
 		throw std::runtime_error("Invalid FIX dictionary XML: no root element.");
@@ -41,7 +33,18 @@ FixDictionary FixDictionaryLoader::LoadFromString(const std::string &xml_content
 	if (messages_root) {
 		LoadMessages(dict, messages_root);
 	}
+}
 
+FixDictionary FixDictionaryLoader::LoadFromString(const std::string &xml_content) {
+	FixDictionary dict;
+	tinyxml2::XMLDocument doc;
+
+	// Parse XML from string
+	if (doc.Parse(xml_content.c_str()) != tinyxml2::XML_SUCCESS) {
+		throw std::runtime_error("Failed to parse dictionary XML from string");
+	}
+
+	LoadFromDocument(dict, doc);
 	return dict;
 }
 
@@ -64,35 +67,7 @@ FixDictionary FixDictionaryLoader::LoadBase(duckdb::ClientContext &context, cons
 		throw std::runtime_error("Failed to parse dictionary XML from: " + path);
 	}
 
-	auto *root = doc.RootElement();
-	if (!root) {
-		throw std::runtime_error("Invalid FIX dictionary XML: no root element.");
-	}
-
-	// ---------------------------
-	// Load <fields>
-	// ---------------------------
-	auto *fields_root = root->FirstChildElement("fields");
-	if (fields_root) {
-		LoadFields(dict, fields_root);
-	}
-
-	// ---------------------------
-	// Load <components> (BEFORE messages)
-	// ---------------------------
-	auto *components_root = root->FirstChildElement("components");
-	if (components_root) {
-		LoadComponents(dict, components_root);
-	}
-
-	// ---------------------------
-	// Load <messages>
-	// ---------------------------
-	auto *messages_root = root->FirstChildElement("messages");
-	if (messages_root) {
-		LoadMessages(dict, messages_root);
-	}
-
+	LoadFromDocument(dict, doc);
 	return dict;
 }
 

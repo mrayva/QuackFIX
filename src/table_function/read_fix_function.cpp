@@ -16,6 +16,7 @@
 #include "parser/fix_group_parser.hpp"
 #include "parser/fix_file_reader.hpp"
 #include "parser/fix_hot_tags.hpp"
+#include <algorithm>
 #include <sstream>
 
 namespace duckdb {
@@ -49,7 +50,31 @@ struct ReadFixGlobalState : public GlobalTableFunctionState {
 	bool needs_tags;
 	bool needs_groups;
 
+	// Reverse lookup from schema column index to its position in column_indexes (i.e. the
+	// output vector index), or DConstants::INVALID_INDEX if that column isn't being produced.
+	// Built once per scan in ReadFixInitGlobal so GetOutputIdx is O(1) instead of scanning
+	// column_indexes on every field of every row.
+	vector<idx_t> output_idx_by_schema_col;
+
 	ReadFixGlobalState() : file_index(0), needs_tags(true), needs_groups(true) {
+	}
+
+	void BuildOutputIndexLookup() {
+		idx_t max_col = 0;
+		for (auto &col : column_indexes) {
+			max_col = std::max<idx_t>(max_col, col.GetPrimaryIndex());
+		}
+		output_idx_by_schema_col.assign(max_col + 1, DConstants::INVALID_INDEX);
+		for (idx_t i = 0; i < column_indexes.size(); i++) {
+			output_idx_by_schema_col[column_indexes[i].GetPrimaryIndex()] = i;
+		}
+	}
+
+	idx_t GetOutputIdx(idx_t schema_col_idx) const {
+		if (schema_col_idx >= output_idx_by_schema_col.size()) {
+			return DConstants::INVALID_INDEX;
+		}
+		return output_idx_by_schema_col[schema_col_idx];
 	}
 
 	idx_t MaxThreads() const override {
@@ -92,12 +117,7 @@ struct FixColumnWriter {
 
 	// Get output column index from schema column index (handles projection pushdown)
 	idx_t GetOutputIdx(idx_t schema_col_idx) const {
-		for (idx_t i = 0; i < gstate.column_indexes.size(); i++) {
-			if (gstate.column_indexes[i].GetPrimaryIndex() == schema_col_idx) {
-				return i;
-			}
-		}
-		return DConstants::INVALID_INDEX;
+		return gstate.GetOutputIdx(schema_col_idx);
 	}
 
 	// Write all hot tags (columns 0-18)
@@ -349,6 +369,7 @@ static unique_ptr<GlobalTableFunctionState> ReadFixInitGlobal(ClientContext &con
 	// Phase 7.5: Store projection information
 	result->projection_ids = input.projection_ids;
 	result->column_indexes = input.column_indexes;
+	result->BuildOutputIndexLookup();
 
 	// Determine if tags and groups columns are needed
 	// Column 19 is tags, Column 20 is groups (0-indexed)
