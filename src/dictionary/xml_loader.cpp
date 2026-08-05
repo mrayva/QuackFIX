@@ -103,9 +103,24 @@ void FixDictionaryLoader::LoadFields(FixDictionary &dict, tinyxml2::XMLElement *
 	for (tinyxml2::XMLElement *field = fields_root->FirstChildElement("field"); field != nullptr;
 	     field = field->NextSiblingElement("field")) {
 		FixFieldDef def;
-		def.tag = field->IntAttribute("number");
-		def.name = field->Attribute("name");
-		def.type = field->Attribute("type");
+
+		int tag;
+		if (field->QueryIntAttribute("number", &tag) != tinyxml2::XML_SUCCESS) {
+			throw std::runtime_error("<field> element missing or invalid 'number' attribute");
+		}
+		def.tag = tag;
+
+		const char *name = field->Attribute("name");
+		if (!name) {
+			throw std::runtime_error("<field number=\"" + std::to_string(tag) + "\"> missing 'name' attribute");
+		}
+		def.name = name;
+
+		const char *type = field->Attribute("type");
+		if (!type) {
+			throw std::runtime_error("<field name=\"" + def.name + "\"> missing 'type' attribute");
+		}
+		def.type = type;
 
 		dict.name_to_tag[def.name] = def.tag;
 
@@ -113,8 +128,13 @@ void FixDictionaryLoader::LoadFields(FixDictionary &dict, tinyxml2::XMLElement *
 		for (tinyxml2::XMLElement *val = field->FirstChildElement("value"); val != nullptr;
 		     val = val->NextSiblingElement("value")) {
 			FixEnum e;
-			e.enum_value = val->Attribute("enum");
-			e.description = val->Attribute("description");
+			const char *enum_value = val->Attribute("enum");
+			if (!enum_value) {
+				throw std::runtime_error("<value> under field '" + def.name + "' missing 'enum' attribute");
+			}
+			e.enum_value = enum_value;
+			const char *description = val->Attribute("description");
+			e.description = description ? description : "";
 			def.enums.push_back(e);
 		}
 
@@ -130,17 +150,27 @@ FixGroupDef FixDictionaryLoader::LoadGroup(FixDictionary &dict, tinyxml2::XMLEle
 
 	const char *group_name = group->Attribute("name");
 	if (!group_name) {
-		throw std::runtime_error("Group node missing name attr");
+		throw std::runtime_error("<group> node missing 'name' attribute");
 	}
 
-	int count_tag = dict.name_to_tag[group_name];
-	g.count_tag = count_tag;
+	auto count_it = dict.name_to_tag.find(group_name);
+	if (count_it == dict.name_to_tag.end()) {
+		throw std::runtime_error(std::string("<group name=\"") + group_name + "\"> references unknown field name");
+	}
+	g.count_tag = count_it->second;
 
 	// group fields
 	for (tinyxml2::XMLElement *f = group->FirstChildElement("field"); f != nullptr;
 	     f = f->NextSiblingElement("field")) {
 		const char *fname = f->Attribute("name");
-		g.field_tags.push_back(dict.name_to_tag[fname]);
+		if (!fname) {
+			throw std::runtime_error(std::string("<field> in group '") + group_name + "' missing 'name' attribute");
+		}
+		auto field_it = dict.name_to_tag.find(fname);
+		if (field_it == dict.name_to_tag.end()) {
+			throw std::runtime_error(std::string("Group '") + group_name + "' references unknown field name: " + fname);
+		}
+		g.field_tags.push_back(field_it->second);
 	}
 
 	// nested groups
@@ -160,15 +190,25 @@ void FixDictionaryLoader::LoadComponents(FixDictionary &dict, tinyxml2::XMLEleme
 	for (tinyxml2::XMLElement *comp = components_root->FirstChildElement("component"); comp != nullptr;
 	     comp = comp->NextSiblingElement("component")) {
 		FixComponentDef c;
-		c.name = comp->Attribute("name");
+		const char *comp_name = comp->Attribute("name");
+		if (!comp_name) {
+			throw std::runtime_error("<component> element missing 'name' attribute");
+		}
+		c.name = comp_name;
 
 		// fields in component
 		for (tinyxml2::XMLElement *field = comp->FirstChildElement("field"); field != nullptr;
 		     field = field->NextSiblingElement("field")) {
 			const char *fname = field->Attribute("name");
-			if (fname) {
-				c.field_tags.push_back(dict.name_to_tag[fname]);
+			if (!fname) {
+				throw std::runtime_error("<field> in component '" + c.name + "' missing 'name' attribute");
 			}
+			auto field_it = dict.name_to_tag.find(fname);
+			if (field_it == dict.name_to_tag.end()) {
+				throw std::runtime_error("Component '" + c.name + "' references unknown field name: " +
+				                         std::string(fname));
+			}
+			c.field_tags.push_back(field_it->second);
 		}
 
 		// groups in component
@@ -227,8 +267,17 @@ void FixDictionaryLoader::LoadMessages(FixDictionary &dict, tinyxml2::XMLElement
 	for (tinyxml2::XMLElement *msg = messages_root->FirstChildElement("message"); msg != nullptr;
 	     msg = msg->NextSiblingElement("message")) {
 		FixMessageDef m;
-		m.name = msg->Attribute("name");
-		m.msg_type = msg->Attribute("msgtype");
+		const char *msg_name = msg->Attribute("name");
+		if (!msg_name) {
+			throw std::runtime_error("<message> element missing 'name' attribute");
+		}
+		m.name = msg_name;
+
+		const char *msg_type = msg->Attribute("msgtype");
+		if (!msg_type) {
+			throw std::runtime_error("<message name=\"" + m.name + "\"> missing 'msgtype' attribute");
+		}
+		m.msg_type = msg_type;
 
 		// Iterate through all child elements in order
 		for (tinyxml2::XMLElement *child = msg->FirstChildElement(); child != nullptr;
@@ -238,9 +287,17 @@ void FixDictionaryLoader::LoadMessages(FixDictionary &dict, tinyxml2::XMLElement
 			if (strcmp(child_name, "field") == 0) {
 				// Direct field
 				const char *fname = child->Attribute("name");
+				if (!fname) {
+					throw std::runtime_error("<field> in message '" + m.name + "' missing 'name' attribute");
+				}
 				bool required = child->Attribute("required") && strcmp(child->Attribute("required"), "Y") == 0;
 
-				int tag = dict.name_to_tag[fname];
+				auto field_it = dict.name_to_tag.find(fname);
+				if (field_it == dict.name_to_tag.end()) {
+					throw std::runtime_error("Message '" + m.name + "' references unknown field name: " +
+					                         std::string(fname));
+				}
+				int tag = field_it->second;
 				if (required) {
 					m.required_fields.push_back(tag);
 				} else {
