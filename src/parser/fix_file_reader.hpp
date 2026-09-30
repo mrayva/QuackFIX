@@ -53,6 +53,7 @@ private:
 	string buffer_;
 	idx_t buffer_offset_;
 	bool file_done_;
+	bool skip_lf_;
 
 	// Buffer size for file reads
 	static constexpr idx_t BUFFER_SIZE = 8192;

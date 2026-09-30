@@ -59,6 +59,16 @@ set(EXTENSION_SOURCES
 build_static_extension(${TARGET_NAME} ${EXTENSION_SOURCES})
 build_loadable_extension(${TARGET_NAME} " " ${EXTENSION_SOURCES})
 
+# Standalone parser/dictionary tests are also run by the repository's `make test` target.
+add_executable(quackfix_tokenizer_test test/test_tokenizer.cpp src/parser/fix_tokenizer.cpp)
+target_include_directories(quackfix_tokenizer_test PRIVATE src)
+set_target_properties(quackfix_tokenizer_test PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}")
+
+add_executable(quackfix_dictionary_test test/test_dictionary.cpp src/dictionary/xml_loader.cpp)
+target_include_directories(quackfix_dictionary_test PRIVATE src third_party/tinyxml2)
+target_link_libraries(quackfix_dictionary_test PRIVATE duckdb)
+set_target_properties(quackfix_dictionary_test PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}")
+
 install(
   TARGETS ${EXTENSION_NAME}
   EXPORT "${DUCKDB_EXPORT_SET}"

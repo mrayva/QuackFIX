@@ -34,6 +34,9 @@ struct ReadFixBindData : public TableFunctionData {
 	// Prefix extraction parameter
 	bool extract_prefix = false; // Default to false
 
+	// Validate standard 8/9/10 envelope tags when requested.
+	bool validate_fix = false;
+
 	ReadFixBindData() {
 	}
 };
@@ -121,6 +124,9 @@ struct FixColumnWriter {
 
 	// Write custom tag columns (columns 23+ or 24+ if prefix enabled)
 	void WriteCustomTags(const ParsedFixMessage &parsed);
+
+	// Write recursively nested repeating groups as JSON after custom tag columns.
+	void WriteGroupsJson(const ParsedFixMessage &parsed);
 };
 
 // Local state - per-thread state
@@ -133,7 +139,7 @@ struct ReadFixLocalState : public LocalTableFunctionState {
 
 // Bind function - called once at query planning time
 static unique_ptr<FunctionData> ReadFixBind(ClientContext &context, TableFunctionBindInput &input,
-                                            vector<LogicalType> &return_types, vector<Identifier> &names) {
+                                            vector<LogicalType> &return_types, vector<string> &names) {
 	auto result = make_uniq<ReadFixBindData>();
 
 	// Get file path parameter
@@ -192,6 +198,9 @@ static unique_ptr<FunctionData> ReadFixBind(ClientContext &context, TableFunctio
 	// Parse prefix parameter
 	if (input.named_parameters.find("prefix") != input.named_parameters.end()) {
 		result->extract_prefix = BooleanValue::Get(input.named_parameters.at("prefix"));
+	}
+	if (input.named_parameters.find("validate_fix") != input.named_parameters.end()) {
+		result->validate_fix = BooleanValue::Get(input.named_parameters.at("validate_fix"));
 	}
 
 	// Phase 7.5: Process custom tag parameters (rtags and tagIds)
@@ -343,6 +352,9 @@ static unique_ptr<FunctionData> ReadFixBind(ClientContext &context, TableFunctio
 		return_types.emplace_back(LogicalType(LogicalTypeId::VARCHAR));
 	}
 
+	names.emplace_back("groups_json");
+	return_types.emplace_back(LogicalType(LogicalTypeId::VARCHAR));
+
 	return std::move(result);
 }
 
@@ -354,10 +366,11 @@ static unique_ptr<GlobalTableFunctionState> ReadFixInitGlobal(ClientContext &con
 	result->projection_ids = input.projection_ids;
 	result->column_indexes = input.column_indexes;
 
-	// Determine if tags and groups columns are needed
-	// Column 19 is tags, Column 20 is groups (0-indexed)
+	// Determine if tags and either groups representation are needed.
 	result->needs_tags = result->IsColumnNeeded(19);
-	result->needs_groups = result->IsColumnNeeded(20);
+	auto &bind_data = input.bind_data->Cast<ReadFixBindData>();
+	idx_t groups_json_col = (bind_data.extract_prefix ? 24 : 23) + bind_data.custom_tags.size();
+	result->needs_groups = result->IsColumnNeeded(20) || result->IsColumnNeeded(groups_json_col);
 
 	return std::move(result);
 }
@@ -471,6 +484,14 @@ void FixColumnWriter::WriteGroupsMap(const ParsedFixMessage &parsed) {
 
 	Value groups_value = FixGroupParser::ParseGroups(parsed, *bind_data.dictionary, gstate.needs_groups);
 	output.data[out_idx].SetValue(row_idx, groups_value);
+}
+
+void FixColumnWriter::WriteGroupsJson(const ParsedFixMessage &parsed) {
+	idx_t schema_col = (bind_data.extract_prefix ? 24 : 23) + bind_data.custom_tags.size();
+	auto out_idx = GetOutputIdx(schema_col);
+	if (out_idx != DConstants::INVALID_INDEX) {
+		output.data[out_idx].SetValue(row_idx, FixGroupParser::ParseGroupsJson(parsed, *bind_data.dictionary));
+	}
 }
 
 void FixColumnWriter::WriteMetadata(const string &raw_line) {
@@ -658,7 +679,14 @@ static void ReadFixScan(ClientContext &context, TableFunctionInput &data_p, Data
 
 		// Parse FIX message
 		ParsedFixMessage parsed;
-		FixTokenizer::Parse(line.c_str(), line.size(), parsed, bind_data.delimiter, bind_data.extract_prefix);
+		FixTokenizer::Parse(line.c_str(), line.size(), parsed, bind_data.delimiter, bind_data.extract_prefix,
+		                    bind_data.validate_fix);
+		if (parsed.parse_error.empty()) {
+			string group_count_error;
+			if (!FixGroupParser::ValidateCounts(parsed, *bind_data.dictionary, group_count_error)) {
+				parsed.parse_error = std::move(group_count_error);
+			}
+		}
 
 		// Initialize error collection
 		vector<string> conversion_errors;
@@ -668,12 +696,17 @@ static void ReadFixScan(ClientContext &context, TableFunctionInput &data_p, Data
 
 		// Use FixColumnWriter helper to write all columns
 		FixColumnWriter writer(output, output_idx, bind_data, gstate, conversion_errors);
-		writer.WriteHotTags(parsed);
-		writer.WriteTagsMap(parsed);
-		writer.WriteGroupsMap(parsed);
+		// Parse failures retain the raw row and error, while parsed-data columns stay NULL
+		// instead of exposing whichever tags happened to precede the malformed input.
+		const ParsedFixMessage empty_parsed;
+		const auto &output_parsed = parsed.parse_error.empty() ? parsed : empty_parsed;
+		writer.WriteHotTags(output_parsed);
+		writer.WriteTagsMap(output_parsed);
+		writer.WriteGroupsMap(output_parsed);
 		writer.WriteMetadata(line);
-		writer.WritePrefix(parsed);
-		writer.WriteCustomTags(parsed);
+		writer.WritePrefix(output_parsed);
+		writer.WriteCustomTags(output_parsed);
+		writer.WriteGroupsJson(output_parsed);
 
 		output_idx++;
 	}
@@ -702,6 +735,9 @@ TableFunction ReadFixFunction::GetFunction() {
 
 	// Prefix extraction parameter
 	func.named_parameters["prefix"] = LogicalType(LogicalTypeId::BOOLEAN);
+
+	// Optional FIX envelope validation (tags 8, 9, and 10).
+	func.named_parameters["validate_fix"] = LogicalType(LogicalTypeId::BOOLEAN);
 
 	return func;
 }

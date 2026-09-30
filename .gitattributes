@@ -1,0 +1,2 @@
+testdata/line_endings.fix whitespace=cr-at-eol
+testdata/line_endings_boundary.fix whitespace=cr-at-eol

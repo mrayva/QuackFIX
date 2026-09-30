@@ -14,6 +14,10 @@ public:
 	// Parse all groups for a message and return MAP value
 	// Returns NULL if no groups found or groups not needed
 	static Value ParseGroups(const ParsedFixMessage &parsed, const FixDictionary &dict, bool needs_groups);
+	// Return a recursively nested JSON representation of repeating groups.
+	static Value ParseGroupsJson(const ParsedFixMessage &parsed, const FixDictionary &dict);
+	// Validate any present repeating-group count tags and explain malformed values.
+	static bool ValidateCounts(const ParsedFixMessage &parsed, const FixDictionary &dict, std::string &error);
 
 private:
 	// Parse instances of a single group
