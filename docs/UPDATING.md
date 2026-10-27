@@ -5,7 +5,7 @@ as follows:
 
 - Bump submodules
   - `./duckdb` should be set to the DuckDB release tag used by CI.
-  - `./extension-ci-tools` should be set to the branch matching DuckDB's release (`v1.5.6` for DuckDB v1.5.6).
+  - `./extension-ci-tools` should be set to the branch matching DuckDB's release (`v2.0-cyanoptera` for DuckDB v2.0.x).
 - Bump versions in `./github/workflows`
   - `duckdb_version` input in `duckdb-stable-build` job in `MainDistributionPipeline.yml` should be set to latest tagged release
   - `duckdb_version` input in `duckdb-stable-deploy` job in `MainDistributionPipeline.yml` should be set to latest tagged release

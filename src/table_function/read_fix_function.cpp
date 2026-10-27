@@ -139,7 +139,7 @@ struct ReadFixLocalState : public LocalTableFunctionState {
 
 // Bind function - called once at query planning time
 static unique_ptr<FunctionData> ReadFixBind(ClientContext &context, TableFunctionBindInput &input,
-                                            vector<LogicalType> &return_types, vector<string> &names) {
+                                            vector<LogicalType> &return_types, vector<Identifier> &names) {
 	auto result = make_uniq<ReadFixBindData>();
 
 	// Get file path parameter
@@ -348,7 +348,7 @@ static unique_ptr<FunctionData> ReadFixBind(ClientContext &context, TableFunctio
 
 	// Phase 7.5: Add custom tag columns (after standard columns)
 	for (const auto &tag_pair : result->custom_tags) {
-		names.emplace_back(tag_pair.first);
+		names.emplace_back(Identifier(tag_pair.first));
 		return_types.emplace_back(LogicalType(LogicalTypeId::VARCHAR));
 	}
 
@@ -399,7 +399,7 @@ void FixColumnWriter::WriteHotTags(const ParsedFixMessage &parsed) {
 			if (ConvertToInt64(ptr, len, val, conversion_errors, name)) {
 				output.data[out_idx].SetValue(row_idx, Value::BIGINT(val));
 			} else {
-				output.data[out_idx].SetValue(row_idx, Value());
+				FlatVector::SetNull(output.data[out_idx], row_idx, true);
 			}
 		}
 	};
@@ -411,7 +411,7 @@ void FixColumnWriter::WriteHotTags(const ParsedFixMessage &parsed) {
 			if (ConvertToDouble(ptr, len, val, conversion_errors, name)) {
 				output.data[out_idx].SetValue(row_idx, Value::DOUBLE(val));
 			} else {
-				output.data[out_idx].SetValue(row_idx, Value());
+				FlatVector::SetNull(output.data[out_idx], row_idx, true);
 			}
 		}
 	};
@@ -423,7 +423,7 @@ void FixColumnWriter::WriteHotTags(const ParsedFixMessage &parsed) {
 			if (ConvertToTimestamp(ptr, len, ts, conversion_errors, name)) {
 				output.data[out_idx].SetValue(row_idx, Value::TIMESTAMP(ts));
 			} else {
-				output.data[out_idx].SetValue(row_idx, Value());
+				FlatVector::SetNull(output.data[out_idx], row_idx, true);
 			}
 		}
 	};
@@ -457,7 +457,7 @@ void FixColumnWriter::WriteTagsMap(const ParsedFixMessage &parsed) {
 	}
 
 	if (!gstate.needs_tags || parsed.other_tags.empty()) {
-		output.data[out_idx].SetValue(row_idx, Value());
+		FlatVector::SetNull(output.data[out_idx], row_idx, true);
 		return;
 	}
 
@@ -505,7 +505,7 @@ void FixColumnWriter::WriteMetadata(const string &raw_line) {
 	out_idx = GetOutputIdx(22);
 	if (out_idx != DConstants::INVALID_INDEX) {
 		if (conversion_errors.empty()) {
-			output.data[out_idx].SetValue(row_idx, Value());
+			FlatVector::SetNull(output.data[out_idx], row_idx, true);
 		} else {
 			string combined_error;
 			for (size_t i = 0; i < conversion_errors.size(); i++) {
@@ -652,7 +652,7 @@ static void ReadFixScan(ClientContext &context, TableFunctionInput &data_p, Data
 		auto &fs = FileSystem::GetFileSystem(context);
 		if (!lstate.file_reader.OpenNextFile(fs, bind_data.files, gstate.file_index, gstate.lock)) {
 			// No more files
-			output.SetCardinality(0);
+			output.SetChildCardinality(0);
 			return;
 		}
 	}
@@ -711,7 +711,7 @@ static void ReadFixScan(ClientContext &context, TableFunctionInput &data_p, Data
 		output_idx++;
 	}
 
-	output.SetCardinality(output_idx);
+	output.SetChildCardinality(output_idx);
 }
 
 // Get the table function definition
@@ -719,25 +719,28 @@ TableFunction ReadFixFunction::GetFunction() {
 	TableFunction func("read_fix", {LogicalType(LogicalTypeId::VARCHAR)}, ReadFixScan, ReadFixBind, ReadFixInitGlobal,
 	                   ReadFixInitLocal);
 	func.name = "read_fix";
+	TypedKwargs options;
 
 	// Phase 7.5: Enable projection pushdown
 	func.projection_pushdown = true;
 
 	// Phase 7.5: Custom tag parameters
-	func.named_parameters["rtags"] = LogicalType::LIST(LogicalType(LogicalTypeId::VARCHAR));  // Tag names
-	func.named_parameters["tagIds"] = LogicalType::LIST(LogicalType(LogicalTypeId::INTEGER)); // Tag numbers
+	options.Add("rtags", LogicalType::LIST(LogicalType(LogicalTypeId::VARCHAR)));  // Tag names
+	options.Add("tagIds", LogicalType::LIST(LogicalType(LogicalTypeId::INTEGER))); // Tag numbers
 
 	// Phase 7.7: Delimiter parameter
-	func.named_parameters["delimiter"] = LogicalType(LogicalTypeId::VARCHAR);
+	options.Add("delimiter", LogicalType(LogicalTypeId::VARCHAR));
 
 	// Phase 7.8: Dictionary parameter
-	func.named_parameters["dictionary"] = LogicalType(LogicalTypeId::VARCHAR);
+	options.Add("dictionary", LogicalType(LogicalTypeId::VARCHAR));
 
 	// Prefix extraction parameter
-	func.named_parameters["prefix"] = LogicalType(LogicalTypeId::BOOLEAN);
+	options.Add("prefix", LogicalType(LogicalTypeId::BOOLEAN));
 
 	// Optional FIX envelope validation (tags 8, 9, and 10).
-	func.named_parameters["validate_fix"] = LogicalType(LogicalTypeId::BOOLEAN);
+	options.Add("validate_fix", LogicalType(LogicalTypeId::BOOLEAN));
+
+	func.GetSignature().AddTypedKwargs("options", std::move(options));
 
 	return func;
 }

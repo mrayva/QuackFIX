@@ -30,7 +30,7 @@ struct FixFieldsGlobalState : public GlobalTableFunctionState {
 };
 
 static unique_ptr<FunctionData> FixFieldsBind(ClientContext &context, TableFunctionBindInput &input,
-                                              vector<LogicalType> &return_types, vector<string> &names) {
+                                              vector<LogicalType> &return_types, vector<Identifier> &names) {
 	auto result = make_uniq<FixFieldsBindData>();
 
 	// Load FIX dictionary - use embedded by default, or custom path if provided
@@ -129,7 +129,7 @@ static void FixFieldsScan(ClientContext &context, TableFunctionInput &data_p, Da
 		gstate.current_idx++;
 	}
 
-	output.SetCardinality(output_idx);
+	output.SetChildCardinality(output_idx);
 }
 
 TableFunction FixFieldsFunction::GetFunction() {
@@ -139,7 +139,7 @@ TableFunction FixFieldsFunction::GetFunction() {
 	TableFunction func("fix_fields", arguments, FixFieldsScan, FixFieldsBind, FixFieldsInitGlobal);
 	func.name = "fix_fields";
 	// Accept 0 or 1 VARCHAR argument for dictionary path
-	func.varargs = LogicalType(LogicalTypeId::VARCHAR);
+	func.GetSignature().AddArgs("args", LogicalType(LogicalTypeId::VARCHAR));
 	return func;
 }
 
@@ -192,7 +192,7 @@ static void AddGroupFields(const FixGroupDef &group_def, const string &msgtype, 
 }
 
 static unique_ptr<FunctionData> FixMessageFieldsBind(ClientContext &context, TableFunctionBindInput &input,
-                                                     vector<LogicalType> &return_types, vector<string> &names) {
+                                                     vector<LogicalType> &return_types, vector<Identifier> &names) {
 	auto result = make_uniq<FixMessageFieldsBindData>();
 
 	// Load FIX dictionary - use embedded by default, or custom path if provided
@@ -312,7 +312,7 @@ static void FixMessageFieldsScan(ClientContext &context, TableFunctionInput &dat
 		gstate.current_idx++;
 	}
 
-	output.SetCardinality(output_idx);
+	output.SetChildCardinality(output_idx);
 }
 
 TableFunction FixMessageFieldsFunction::GetFunction() {
@@ -323,7 +323,7 @@ TableFunction FixMessageFieldsFunction::GetFunction() {
 	                   FixMessageFieldsInitGlobal);
 	func.name = "fix_message_fields";
 	// Accept 0 or 1 VARCHAR argument for dictionary path
-	func.varargs = LogicalType(LogicalTypeId::VARCHAR);
+	func.GetSignature().AddArgs("args", LogicalType(LogicalTypeId::VARCHAR));
 	return func;
 }
 
@@ -384,7 +384,7 @@ static void CollectGroups(const FixGroupDef &group_def, int count_tag, const str
 }
 
 static unique_ptr<FunctionData> FixGroupsBind(ClientContext &context, TableFunctionBindInput &input,
-                                              vector<LogicalType> &return_types, vector<string> &names) {
+                                              vector<LogicalType> &return_types, vector<Identifier> &names) {
 	auto result = make_uniq<FixGroupsBindData>();
 
 	// Load FIX dictionary - use embedded by default, or custom path if provided
@@ -490,7 +490,7 @@ static void FixGroupsScan(ClientContext &context, TableFunctionInput &data_p, Da
 		gstate.current_idx++;
 	}
 
-	output.SetCardinality(output_idx);
+	output.SetChildCardinality(output_idx);
 }
 
 TableFunction FixGroupsFunction::GetFunction() {
@@ -500,7 +500,7 @@ TableFunction FixGroupsFunction::GetFunction() {
 	TableFunction func("fix_groups", arguments, FixGroupsScan, FixGroupsBind, FixGroupsInitGlobal);
 	func.name = "fix_groups";
 	// Accept 0 or 1 VARCHAR argument for dictionary path
-	func.varargs = LogicalType(LogicalTypeId::VARCHAR);
+	func.GetSignature().AddArgs("args", LogicalType(LogicalTypeId::VARCHAR));
 	return func;
 }
 

@@ -64,7 +64,7 @@ add_executable(quackfix_tokenizer_test test/test_tokenizer.cpp src/parser/fix_to
 target_include_directories(quackfix_tokenizer_test PRIVATE src)
 set_target_properties(quackfix_tokenizer_test PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}")
 
-add_executable(quackfix_dictionary_test test/test_dictionary.cpp src/dictionary/xml_loader.cpp)
+add_executable(quackfix_dictionary_test test/test_dictionary.cpp src/dictionary/xml_loader.cpp third_party/tinyxml2/tinyxml2.cpp)
 target_include_directories(quackfix_dictionary_test PRIVATE src third_party/tinyxml2)
 target_link_libraries(quackfix_dictionary_test PRIVATE duckdb)
 set_target_properties(quackfix_dictionary_test PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}")
