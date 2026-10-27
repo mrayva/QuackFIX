@@ -16,6 +16,7 @@
 #include "parser/fix_group_parser.hpp"
 #include "parser/fix_file_reader.hpp"
 #include "parser/fix_hot_tags.hpp"
+#include <algorithm>
 #include <sstream>
 
 namespace duckdb {
@@ -52,7 +53,31 @@ struct ReadFixGlobalState : public GlobalTableFunctionState {
 	bool needs_tags;
 	bool needs_groups;
 
+	// Reverse lookup from schema column index to its position in column_indexes (i.e. the
+	// output vector index), or DConstants::INVALID_INDEX if that column isn't being produced.
+	// Built once per scan in ReadFixInitGlobal so GetOutputIdx is O(1) instead of scanning
+	// column_indexes on every field of every row.
+	vector<idx_t> output_idx_by_schema_col;
+
 	ReadFixGlobalState() : file_index(0), needs_tags(true), needs_groups(true) {
+	}
+
+	void BuildOutputIndexLookup() {
+		idx_t max_col = 0;
+		for (auto &col : column_indexes) {
+			max_col = std::max<idx_t>(max_col, col.GetPrimaryIndex());
+		}
+		output_idx_by_schema_col.assign(max_col + 1, DConstants::INVALID_INDEX);
+		for (idx_t i = 0; i < column_indexes.size(); i++) {
+			output_idx_by_schema_col[column_indexes[i].GetPrimaryIndex()] = i;
+		}
+	}
+
+	idx_t GetOutputIdx(idx_t schema_col_idx) const {
+		if (schema_col_idx >= output_idx_by_schema_col.size()) {
+			return DConstants::INVALID_INDEX;
+		}
+		return output_idx_by_schema_col[schema_col_idx];
 	}
 
 	idx_t MaxThreads() const override {
@@ -64,17 +89,13 @@ struct ReadFixGlobalState : public GlobalTableFunctionState {
 	}
 
 	bool IsColumnNeeded(idx_t col_idx) const {
-		// Column is needed if it's in projection_ids or column_indexes (filter columns)
-		if (projection_ids.empty()) {
-			return true; // No projection pushdown, need all columns
-		}
-		// Check if in projection
-		for (auto proj_id : projection_ids) {
-			if (proj_id == col_idx) {
-				return true;
-			}
-		}
-		// Check if in column_indexes (includes filter columns)
+		// column_indexes is the authoritative list of schema columns the scan must produce
+		// (both projected columns and filter-only columns). projection_ids holds *positions*
+		// within column_indexes for the columns that survive past the scan, not schema column
+		// indices, so it can't be compared against col_idx directly - and an empty
+		// projection_ids doesn't mean "no pushdown", it can just as well mean "nothing needs to
+		// survive the scan" (e.g. a bare COUNT(*)), so it must not short-circuit to "need
+		// everything" here.
 		for (idx_t i = 0; i < column_indexes.size(); i++) {
 			if (column_indexes[i].GetPrimaryIndex() == col_idx) {
 				return true;
@@ -99,12 +120,7 @@ struct FixColumnWriter {
 
 	// Get output column index from schema column index (handles projection pushdown)
 	idx_t GetOutputIdx(idx_t schema_col_idx) const {
-		for (idx_t i = 0; i < gstate.column_indexes.size(); i++) {
-			if (gstate.column_indexes[i].GetPrimaryIndex() == schema_col_idx) {
-				return i;
-			}
-		}
-		return DConstants::INVALID_INDEX;
+		return gstate.GetOutputIdx(schema_col_idx);
 	}
 
 	// Write all hot tags (columns 0-18)
@@ -365,6 +381,7 @@ static unique_ptr<GlobalTableFunctionState> ReadFixInitGlobal(ClientContext &con
 	// Phase 7.5: Store projection information
 	result->projection_ids = input.projection_ids;
 	result->column_indexes = input.column_indexes;
+	result->BuildOutputIndexLookup();
 
 	// Determine if tags and either groups representation are needed.
 	result->needs_tags = result->IsColumnNeeded(19);
@@ -482,7 +499,7 @@ void FixColumnWriter::WriteGroupsMap(const ParsedFixMessage &parsed) {
 		return;
 	}
 
-	Value groups_value = FixGroupParser::ParseGroups(parsed, *bind_data.dictionary, gstate.needs_groups);
+	Value groups_value = FixGroupParser::ParseGroups(parsed, *bind_data.dictionary, gstate.needs_groups, conversion_errors);
 	output.data[out_idx].SetValue(row_idx, groups_value);
 }
 

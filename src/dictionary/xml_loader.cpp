@@ -35,15 +35,7 @@ int ParseFieldNumber(const char *number) {
 }
 }
 
-FixDictionary FixDictionaryLoader::LoadFromString(const std::string &xml_content) {
-	FixDictionary dict;
-	tinyxml2::XMLDocument doc;
-
-	// Parse XML from string
-	if (doc.Parse(xml_content.c_str()) != tinyxml2::XML_SUCCESS) {
-		throw std::runtime_error("Failed to parse dictionary XML from string");
-	}
-
+void FixDictionaryLoader::LoadFromDocument(FixDictionary &dict, tinyxml2::XMLDocument &doc) {
 	auto *root = doc.RootElement();
 	if (!root) {
 		throw std::runtime_error("Invalid FIX dictionary XML: no root element.");
@@ -72,7 +64,18 @@ FixDictionary FixDictionaryLoader::LoadFromString(const std::string &xml_content
 	if (messages_root) {
 		LoadMessages(dict, messages_root);
 	}
+}
 
+FixDictionary FixDictionaryLoader::LoadFromString(const std::string &xml_content) {
+	FixDictionary dict;
+	tinyxml2::XMLDocument doc;
+
+	// Parse XML from string
+	if (doc.Parse(xml_content.c_str()) != tinyxml2::XML_SUCCESS) {
+		throw std::runtime_error("Failed to parse dictionary XML from string");
+	}
+
+	LoadFromDocument(dict, doc);
 	return dict;
 }
 
@@ -95,35 +98,7 @@ FixDictionary FixDictionaryLoader::LoadBase(duckdb::ClientContext &context, cons
 		throw std::runtime_error("Failed to parse dictionary XML from: " + path);
 	}
 
-	auto *root = doc.RootElement();
-	if (!root) {
-		throw std::runtime_error("Invalid FIX dictionary XML: no root element.");
-	}
-
-	// ---------------------------
-	// Load <fields>
-	// ---------------------------
-	auto *fields_root = root->FirstChildElement("fields");
-	if (fields_root) {
-		LoadFields(dict, fields_root);
-	}
-
-	// ---------------------------
-	// Load <components> (BEFORE messages)
-	// ---------------------------
-	auto *components_root = root->FirstChildElement("components");
-	if (components_root) {
-		LoadComponents(dict, components_root);
-	}
-
-	// ---------------------------
-	// Load <messages>
-	// ---------------------------
-	auto *messages_root = root->FirstChildElement("messages");
-	if (messages_root) {
-		LoadMessages(dict, messages_root);
-	}
-
+	LoadFromDocument(dict, doc);
 	return dict;
 }
 
@@ -150,8 +125,13 @@ void FixDictionaryLoader::LoadFields(FixDictionary &dict, tinyxml2::XMLElement *
 		for (tinyxml2::XMLElement *val = field->FirstChildElement("value"); val != nullptr;
 		     val = val->NextSiblingElement("value")) {
 			FixEnum e;
-			e.enum_value = val->Attribute("enum");
-			e.description = val->Attribute("description");
+			const char *enum_value = val->Attribute("enum");
+			if (!enum_value) {
+				throw std::runtime_error("<value> under field '" + def.name + "' missing 'enum' attribute");
+			}
+			e.enum_value = enum_value;
+			const char *description = val->Attribute("description");
+			e.description = description ? description : "";
 			def.enums.push_back(e);
 		}
 
@@ -167,7 +147,7 @@ FixGroupDef FixDictionaryLoader::LoadGroup(FixDictionary &dict, tinyxml2::XMLEle
 
 	const char *group_name = group->Attribute("name");
 	if (!group_name) {
-		throw std::runtime_error("Group node missing name attr");
+		throw std::runtime_error("<group> node missing 'name' attribute");
 	}
 
 	int count_tag = ResolveTag(dict, group_name, "group");
@@ -198,7 +178,7 @@ void FixDictionaryLoader::LoadComponents(FixDictionary &dict, tinyxml2::XMLEleme
 	     comp = comp->NextSiblingElement("component")) {
 		FixComponentDef c;
 		if (!comp->Attribute("name")) {
-			throw std::runtime_error("Component node missing name attr");
+			throw std::runtime_error("<component> element missing 'name' attribute");
 		}
 		c.name = comp->Attribute("name");
 		if (dict.components.find(c.name) != dict.components.end()) {
@@ -269,7 +249,7 @@ void FixDictionaryLoader::LoadMessages(FixDictionary &dict, tinyxml2::XMLElement
 	     msg = msg->NextSiblingElement("message")) {
 		FixMessageDef m;
 		if (!msg->Attribute("name") || !msg->Attribute("msgtype")) {
-			throw std::runtime_error("FIX message must have name and msgtype attrs");
+			throw std::runtime_error("<message> element missing 'name' or 'msgtype' attribute");
 		}
 		m.name = msg->Attribute("name");
 		m.msg_type = msg->Attribute("msgtype");
@@ -285,6 +265,9 @@ void FixDictionaryLoader::LoadMessages(FixDictionary &dict, tinyxml2::XMLElement
 			if (strcmp(child_name, "field") == 0) {
 				// Direct field
 				const char *fname = child->Attribute("name");
+				if (!fname) {
+					throw std::runtime_error("<field> in message '" + m.name + "' missing 'name' attribute");
+				}
 				bool required = child->Attribute("required") && strcmp(child->Attribute("required"), "Y") == 0;
 
 				int tag = ResolveTag(dict, fname, "message field");
