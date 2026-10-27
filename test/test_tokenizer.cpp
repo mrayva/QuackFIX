@@ -1,3 +1,7 @@
+#ifdef NDEBUG
+#undef NDEBUG
+#endif
+
 #include <iostream>
 #include <cassert>
 #include <string>
@@ -64,7 +68,7 @@ void test_execution_report() {
 void test_other_tags() {
 	std::cout << "Test: Non-hot tags stored in other_tags..." << std::endl;
 
-	std::string msg = "35=D|49=SENDER|8=FIX.4.4|9=100|21=1|40=2|59=0|60=20231215-10:30:00|10=000";
+	std::string msg = "8=FIX.4.4|9=100|35=D|49=SENDER|21=1|40=2|59=0|60=20231215-10:30:00|10=000";
 
 	ParsedFixMessage parsed;
 	bool success = FixTokenizer::Parse(msg.c_str(), msg.size(), parsed, '|');
@@ -87,7 +91,8 @@ void test_soh_delimiter() {
 	std::cout << "Test: SOH delimiter parsing..." << std::endl;
 
 	// Build message with SOH delimiter
-	std::string msg = "35=D\x01"
+	std::string msg = "8=FIX.4.4\x01"
+	                  "35=D\x01"
 	                  "49=SENDER\x01"
 	                  "56=TARGET\x01"
 	                  "11=ORDER123\x01"
@@ -109,7 +114,7 @@ void test_soh_delimiter() {
 void test_missing_msgtype() {
 	std::cout << "Test: Missing MsgType error..." << std::endl;
 
-	std::string msg = "49=SENDER|56=TARGET|11=ORDER123";
+	std::string msg = "8=FIX.4.4|49=SENDER|56=TARGET|11=ORDER123";
 
 	ParsedFixMessage parsed;
 	bool success = FixTokenizer::Parse(msg.c_str(), msg.size(), parsed, '|');
@@ -124,7 +129,7 @@ void test_missing_msgtype() {
 void test_invalid_format() {
 	std::cout << "Test: Invalid tag format error..." << std::endl;
 
-	std::string msg = "35=D|49SENDER|56=TARGET"; // Missing = in tag 49
+	std::string msg = "8=FIX.4.4|35=D|49SENDER|56=TARGET"; // Missing = in tag 49
 
 	ParsedFixMessage parsed;
 	bool success = FixTokenizer::Parse(msg.c_str(), msg.size(), parsed, '|');
@@ -149,10 +154,50 @@ void test_empty_message() {
 	std::cout << "  ✓ Empty message correctly detected" << std::endl;
 }
 
+void test_tag_number_overflow() {
+	std::string msg = "8=FIX.4.4|999999999999999999999999999999999999=D|35=D";
+	ParsedFixMessage parsed;
+	bool success = FixTokenizer::Parse(msg.c_str(), msg.size(), parsed, '|');
+	assert(!success && "Out-of-range tag number must be rejected");
+	assert(parsed.parse_error == "Failed to parse tag");
+}
+
+std::string make_valid_envelope(char delimiter) {
+	const std::string body = std::string("35=D") + delimiter + "49=S" + delimiter + "56=T" + delimiter + "34=1" + delimiter;
+	std::string message = std::string("8=FIX.4.4") + delimiter + "9=" + std::to_string(body.size()) + delimiter + body;
+	unsigned int checksum = 0;
+	for (unsigned char c : message) {
+		checksum += c;
+	}
+	char checksum_value[4];
+	snprintf(checksum_value, sizeof(checksum_value), "%03u", checksum % 256);
+	message += std::string("10=") + checksum_value + delimiter;
+	return message;
+}
+
+void test_strict_envelope_validation() {
+	ParsedFixMessage parsed;
+	std::string valid = make_valid_envelope('|');
+	assert(FixTokenizer::Parse(valid.c_str(), valid.size(), parsed, '|', false, true));
+
+	std::string bad_checksum = valid;
+	const auto checksum_pos = bad_checksum.find("10=") + 3;
+	bad_checksum[checksum_pos] = bad_checksum[checksum_pos] == '9' ? '0' : static_cast<char>(bad_checksum[checksum_pos] + 1);
+	assert(!FixTokenizer::Parse(bad_checksum.c_str(), bad_checksum.size(), parsed, '|', false, true));
+
+	std::string bad_body_length = valid;
+	const auto body_length_pos = bad_body_length.find("9=") + 2;
+	bad_body_length[body_length_pos] = bad_body_length[body_length_pos] == '9' ? '0' : static_cast<char>(bad_body_length[body_length_pos] + 1);
+	assert(!FixTokenizer::Parse(bad_body_length.c_str(), bad_body_length.size(), parsed, '|', false, true));
+
+	const std::string soh_message = make_valid_envelope('\x01');
+	assert(FixTokenizer::Parse(soh_message.c_str(), soh_message.size(), parsed, '\x01', false, true));
+}
+
 void test_raw_message_stored() {
 	std::cout << "Test: Raw message is stored..." << std::endl;
 
-	std::string msg = "35=D|49=SENDER|56=TARGET|55=AAPL";
+	std::string msg = "8=FIX.4.4|35=D|49=SENDER|56=TARGET|55=AAPL";
 
 	ParsedFixMessage parsed;
 	bool success = FixTokenizer::Parse(msg.c_str(), msg.size(), parsed, '|');
@@ -176,6 +221,8 @@ int main() {
 		test_missing_msgtype();
 		test_invalid_format();
 		test_empty_message();
+		test_tag_number_overflow();
+		test_strict_envelope_validation();
 		test_raw_message_stored();
 
 		std::cout << "\n✅ All tokenizer tests passed!" << std::endl;

@@ -1,0 +1,21 @@
+<fix>
+  <fields>
+    <field number="35" name="MsgType" type="STRING"/>
+    <field number="900" name="NoParents" type="NUMINGROUP"/>
+    <field number="901" name="ParentID" type="STRING"/>
+    <field number="902" name="NoChildren" type="NUMINGROUP"/>
+    <field number="903" name="ChildID" type="STRING"/>
+    <field number="904" name="ChildValue" type="STRING"/>
+  </fields>
+  <messages>
+    <message name="NestedGroupExample" msgtype="Z">
+      <group name="NoParents" required="N">
+        <field name="ParentID" required="Y"/>
+        <group name="NoChildren" required="N">
+          <field name="ChildID" required="Y"/>
+          <field name="ChildValue" required="N"/>
+        </group>
+      </group>
+    </message>
+  </messages>
+</fix>

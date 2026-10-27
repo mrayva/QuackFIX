@@ -136,6 +136,101 @@ SELECT COUNT(*) FROM read_fix('testdata/sample.fix') WHERE groups IS NULL;
 ----
 5
 
+# Both PartyID instances in the repeating group are retained.
+query III
+SELECT array_length(groups[453]), groups[453][1][448], groups[453][2][448]
+FROM read_fix('testdata/sample.fix') WHERE MsgSeqNum = 5;
+----
+2	BROKER1	CLEARHOUSE
+
+# Nested group values are preserved by the recursive JSON representation.
+query I
+SELECT contains(groups_json, '"902"') AND contains(groups_json, '"904":"two"')
+FROM read_fix('testdata/nested_groups.fix', dictionary='testdata/nested_groups_dictionary.xml');
+----
+true
+
+# The nested group JSON is structurally valid and preserves each instance and field.
+query I
+SELECT groups_json = '{"900":[{"fields":{"901":"P1"},"groups":{"902":[{"fields":{"903":"A","904":"one"},"groups":{}},{"fields":{"903":"B","904":"two"},"groups":{}}]}}]}'
+FROM read_fix('testdata/nested_groups.fix', dictionary='testdata/nested_groups_dictionary.xml');
+----
+true
+
+# The JSON group projection remains correct after custom columns are added.
+query I
+SELECT ParentID = 'P1' AND groups_json = '{"900":[{"fields":{"901":"P1"},"groups":{"902":[{"fields":{"903":"A","904":"one"},"groups":{}},{"fields":{"903":"B","904":"two"},"groups":{}}]}}]}'
+FROM read_fix('testdata/nested_groups.fix', dictionary='testdata/nested_groups_dictionary.xml', rtags=['ParentID']);
+----
+true
+
+# The JSON group projection remains correct when prefix and custom columns shift its schema position.
+query I
+SELECT length(prefix) = 5 AND ParentID = 'P1' AND groups_json = '{"900":[{"fields":{"901":"P1"},"groups":{"902":[{"fields":{"903":"A","904":"one"},"groups":{}},{"fields":{"903":"B","904":"two"},"groups":{}}]}}]}'
+FROM read_fix('testdata/nested_groups_prefix.fix', dictionary='testdata/nested_groups_dictionary.xml', prefix=true, rtags=['ParentID']);
+----
+true
+
+# Strict validation accepts a frame with matching BodyLength and CheckSum.
+query I
+SELECT COUNT(*) FROM read_fix('testdata/valid_frame.fix', validate_fix=true) WHERE parse_error IS NULL;
+----
+1
+
+# Strict validation records malformed or mismatched envelopes.
+query I
+SELECT COUNT(*) > 0 FROM read_fix('testdata/sample.fix', validate_fix=true) WHERE parse_error IS NOT NULL;
+----
+true
+
+# LF, CRLF, and CR delimit records; a final line without a terminator is retained.
+query I
+SELECT COUNT(*) FROM read_fix('testdata/line_endings.fix');
+----
+3
+
+# CRLF split across the reader's 8192-byte buffer boundary is treated as one newline.
+query I
+SELECT COUNT(*) FROM read_fix('testdata/line_endings_boundary.fix');
+----
+2
+
+# Malformed group counts are reported instead of silently becoming empty groups.
+query I
+SELECT parse_error LIKE '%tag 900%' AND groups IS NULL AND groups_json IS NULL
+FROM read_fix('testdata/malformed_group_count.fix', dictionary='testdata/nested_groups_dictionary.xml');
+----
+true
+
+# Nested count tags repeated in separate parent instances are validated at each occurrence.
+query I
+SELECT parse_error IS NULL AND groups_json = '{"900":[{"fields":{"901":"P1"},"groups":{"902":[{"fields":{"903":"A","904":"one"},"groups":{}}]}},{"fields":{"901":"P2"},"groups":{"902":[{"fields":{"903":"B","904":"two"},"groups":{}},{"fields":{"903":"C","904":"three"},"groups":{}}]}}]}'
+FROM read_fix('testdata/repeated_nested_counts.fix', dictionary='testdata/nested_groups_dictionary.xml');
+----
+true
+
+# A bad first nested count is caught even when a later occurrence of that tag is valid.
+query I
+SELECT parse_error LIKE '%tag 902%' AND groups_json IS NULL
+FROM read_fix('testdata/repeated_nested_counts_bad.fix', dictionary='testdata/nested_groups_dictionary.xml');
+----
+true
+
+# Declared counts must match top-level and nested group delimiter instances.
+query I
+SELECT COUNT(*) = 4 AND COUNT(*) FILTER (WHERE parse_error IS NOT NULL AND groups IS NULL AND groups_json IS NULL) = 4
+FROM read_fix('testdata/group_count_mismatch.fix', dictionary='testdata/nested_groups_dictionary.xml');
+----
+true
+
+# A parse failure keeps the raw row and error while all parsed-data projections are NULL.
+query I
+SELECT MsgType IS NULL AND Symbol IS NULL AND tags IS NULL AND groups IS NULL AND groups_json IS NULL
+       AND raw_message IS NOT NULL AND parse_error IS NOT NULL
+FROM read_fix('testdata/malformed_parse.fix');
+----
+true
+
 # Test message with NoPartyIDs group (tag 453) - Message 5
 query IIII
 SELECT MsgType, Symbol, OrderID, ExecID FROM read_fix('testdata/sample.fix') WHERE Symbol = 'TSLA';

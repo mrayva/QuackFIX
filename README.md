@@ -56,7 +56,7 @@ SELECT * FROM read_fix('logs/trading.fix') LIMIT 10;
 │ D       │ SENDER       │ TARGET       │         3 │ 2023-12-15 10:31:00 │ … │    NULL │ NULL    │ {10=000, 59=0, 40=…  │ NULL                 │ 8=FIX.4.4|9=160|35…  │ NULL        │
 │ 8       │ TARGET       │ SENDER       │         4 │ 2023-12-15 10:31:01 │ … │    50.0 │ NULL    │ {10=000, 9=180, 8=…  │ NULL                 │ 8=FIX.4.4|9=180|35…  │ NULL        │
 ├─────────┴──────────────┴──────────────┴───────────┴─────────────────────┴───┴─────────┴─────────┴──────────────────────┴──────────────────────┴──────────────────────┴─────────────┤
-│ 4 rows                                                                                                                                                       23 columns (11 shown) │
+│ 4 rows                                                                                                                                                       24 columns (11 shown) │
 └────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -74,7 +74,7 @@ WHERE MsgType = 'D' AND Symbol = 'AAPL';
 ├─────────┼──────────────┼──────────────┼───────────┼─────────────────────┼───┼─────────┼─────────┼──────────────────────┼──────────────────────┼──────────────────────┼─────────────┤
 │ D       │ SENDER       │ TARGET       │     1     │ 2023-12-15 10:30:00 │ … │  NULL   │ NULL    │ {10=000, 59=0, 40=…  │ NULL                 │ 8=FIX.4.4|9=178|35…  │ NULL        │
 ├─────────┴──────────────┴──────────────┴───────────┴─────────────────────┴───┴─────────┴─────────┴──────────────────────┴──────────────────────┴──────────────────────┴─────────────┤
-│ 1 rows                                                                                                                                                       23 columns (11 shown) │
+│ 1 rows                                                                                                                                                       24 columns (11 shown) │
 └────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -116,6 +116,25 @@ FROM read_fix('logs/*.fix');
 │ AAPL    │ NULL              │
 └─────────┴───────────────────┘
 ```
+
+### Repeating groups and FIX envelope validation
+
+`groups` provides the existing flat map representation. `groups_json` provides a nested JSON representation for repeating groups, including nested groups:
+
+```sql
+SELECT groups_json
+FROM read_fix('logs/trading.fix')
+WHERE groups_json IS NOT NULL;
+```
+
+FIX BodyLength and CheckSum validation is opt-in so fragment captures remain readable:
+
+```sql
+SELECT *
+FROM read_fix('logs/trading.fix', validate_fix=true);
+```
+
+Invalid envelopes are returned in `parse_error`.
 
 ### 5. Aggregation: Analytics on FIX Data
 ```sql

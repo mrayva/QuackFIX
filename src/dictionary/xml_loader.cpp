@@ -3,6 +3,37 @@
 #include "duckdb/common/file_system.hpp"
 #include <stdexcept>
 #include <iostream>
+#include <limits>
+
+namespace {
+int ResolveTag(const FixDictionary &dict, const char *name, const char *where) {
+	if (!name) {
+		throw std::runtime_error(std::string("Missing field name in ") + where);
+	}
+	auto it = dict.name_to_tag.find(name);
+	if (it == dict.name_to_tag.end()) {
+		throw std::runtime_error(std::string("Unknown FIX field '") + name + "' in " + where);
+	}
+	return it->second;
+}
+
+int ParseFieldNumber(const char *number) {
+	if (!number || !*number) {
+		throw std::runtime_error("FIX field must have a positive numeric number");
+	}
+	int value = 0;
+	for (const char *p = number; *p; p++) {
+		if (*p < '0' || *p > '9' || value > (std::numeric_limits<int>::max() - (*p - '0')) / 10) {
+			throw std::runtime_error(std::string("Invalid FIX field number '") + number + "'");
+		}
+		value = value * 10 + (*p - '0');
+	}
+	if (value <= 0) {
+		throw std::runtime_error("FIX field number must be positive");
+	}
+	return value;
+}
+}
 
 void FixDictionaryLoader::LoadFromDocument(FixDictionary &dict, tinyxml2::XMLDocument &doc) {
 	auto *root = doc.RootElement();
@@ -78,24 +109,15 @@ void FixDictionaryLoader::LoadFields(FixDictionary &dict, tinyxml2::XMLElement *
 	for (tinyxml2::XMLElement *field = fields_root->FirstChildElement("field"); field != nullptr;
 	     field = field->NextSiblingElement("field")) {
 		FixFieldDef def;
-
-		int tag;
-		if (field->QueryIntAttribute("number", &tag) != tinyxml2::XML_SUCCESS) {
-			throw std::runtime_error("<field> element missing or invalid 'number' attribute");
+		if (!field->Attribute("name") || !field->Attribute("type") || !field->Attribute("number")) {
+			throw std::runtime_error("FIX field must have a positive number, name, and type");
 		}
-		def.tag = tag;
-
-		const char *name = field->Attribute("name");
-		if (!name) {
-			throw std::runtime_error("<field number=\"" + std::to_string(tag) + "\"> missing 'name' attribute");
+		def.tag = ParseFieldNumber(field->Attribute("number"));
+		def.name = field->Attribute("name");
+		def.type = field->Attribute("type");
+		if (dict.fields.find(def.tag) != dict.fields.end() || dict.name_to_tag.find(def.name) != dict.name_to_tag.end()) {
+			throw std::runtime_error("Duplicate FIX field number or name");
 		}
-		def.name = name;
-
-		const char *type = field->Attribute("type");
-		if (!type) {
-			throw std::runtime_error("<field name=\"" + def.name + "\"> missing 'type' attribute");
-		}
-		def.type = type;
 
 		dict.name_to_tag[def.name] = def.tag;
 
@@ -128,24 +150,14 @@ FixGroupDef FixDictionaryLoader::LoadGroup(FixDictionary &dict, tinyxml2::XMLEle
 		throw std::runtime_error("<group> node missing 'name' attribute");
 	}
 
-	auto count_it = dict.name_to_tag.find(group_name);
-	if (count_it == dict.name_to_tag.end()) {
-		throw std::runtime_error(std::string("<group name=\"") + group_name + "\"> references unknown field name");
-	}
-	g.count_tag = count_it->second;
+	int count_tag = ResolveTag(dict, group_name, "group");
+	g.count_tag = count_tag;
 
 	// group fields
 	for (tinyxml2::XMLElement *f = group->FirstChildElement("field"); f != nullptr;
 	     f = f->NextSiblingElement("field")) {
 		const char *fname = f->Attribute("name");
-		if (!fname) {
-			throw std::runtime_error(std::string("<field> in group '") + group_name + "' missing 'name' attribute");
-		}
-		auto field_it = dict.name_to_tag.find(fname);
-		if (field_it == dict.name_to_tag.end()) {
-			throw std::runtime_error(std::string("Group '") + group_name + "' references unknown field name: " + fname);
-		}
-		g.field_tags.push_back(field_it->second);
+		g.field_tags.push_back(ResolveTag(dict, fname, "group field"));
 	}
 
 	// nested groups
@@ -165,25 +177,19 @@ void FixDictionaryLoader::LoadComponents(FixDictionary &dict, tinyxml2::XMLEleme
 	for (tinyxml2::XMLElement *comp = components_root->FirstChildElement("component"); comp != nullptr;
 	     comp = comp->NextSiblingElement("component")) {
 		FixComponentDef c;
-		const char *comp_name = comp->Attribute("name");
-		if (!comp_name) {
+		if (!comp->Attribute("name")) {
 			throw std::runtime_error("<component> element missing 'name' attribute");
 		}
-		c.name = comp_name;
+		c.name = comp->Attribute("name");
+		if (dict.components.find(c.name) != dict.components.end()) {
+			throw std::runtime_error(std::string("Duplicate FIX component '") + c.name + "'");
+		}
 
 		// fields in component
 		for (tinyxml2::XMLElement *field = comp->FirstChildElement("field"); field != nullptr;
 		     field = field->NextSiblingElement("field")) {
 			const char *fname = field->Attribute("name");
-			if (!fname) {
-				throw std::runtime_error("<field> in component '" + c.name + "' missing 'name' attribute");
-			}
-			auto field_it = dict.name_to_tag.find(fname);
-			if (field_it == dict.name_to_tag.end()) {
-				throw std::runtime_error("Component '" + c.name + "' references unknown field name: " +
-				                         std::string(fname));
-			}
-			c.field_tags.push_back(field_it->second);
+			c.field_tags.push_back(ResolveTag(dict, fname, "component field"));
 		}
 
 		// groups in component
@@ -203,12 +209,12 @@ void FixDictionaryLoader::LoadComponents(FixDictionary &dict, tinyxml2::XMLEleme
 void FixDictionaryLoader::ExpandComponent(FixDictionary &dict, FixMessageDef &msg, tinyxml2::XMLElement *comp_ref) {
 	const char *comp_name = comp_ref->Attribute("name");
 	if (!comp_name) {
-		return;
+		throw std::runtime_error("Component reference missing name attr");
 	}
 
 	auto it = dict.components.find(comp_name);
 	if (it == dict.components.end()) {
-		return;
+		throw std::runtime_error(std::string("Unknown FIX component '") + comp_name + "'");
 	}
 
 	const FixComponentDef &comp = it->second;
@@ -242,17 +248,14 @@ void FixDictionaryLoader::LoadMessages(FixDictionary &dict, tinyxml2::XMLElement
 	for (tinyxml2::XMLElement *msg = messages_root->FirstChildElement("message"); msg != nullptr;
 	     msg = msg->NextSiblingElement("message")) {
 		FixMessageDef m;
-		const char *msg_name = msg->Attribute("name");
-		if (!msg_name) {
-			throw std::runtime_error("<message> element missing 'name' attribute");
+		if (!msg->Attribute("name") || !msg->Attribute("msgtype")) {
+			throw std::runtime_error("<message> element missing 'name' or 'msgtype' attribute");
 		}
-		m.name = msg_name;
-
-		const char *msg_type = msg->Attribute("msgtype");
-		if (!msg_type) {
-			throw std::runtime_error("<message name=\"" + m.name + "\"> missing 'msgtype' attribute");
+		m.name = msg->Attribute("name");
+		m.msg_type = msg->Attribute("msgtype");
+		if (dict.messages.find(m.msg_type) != dict.messages.end()) {
+			throw std::runtime_error(std::string("Duplicate FIX message type '") + m.msg_type + "'");
 		}
-		m.msg_type = msg_type;
 
 		// Iterate through all child elements in order
 		for (tinyxml2::XMLElement *child = msg->FirstChildElement(); child != nullptr;
@@ -267,12 +270,7 @@ void FixDictionaryLoader::LoadMessages(FixDictionary &dict, tinyxml2::XMLElement
 				}
 				bool required = child->Attribute("required") && strcmp(child->Attribute("required"), "Y") == 0;
 
-				auto field_it = dict.name_to_tag.find(fname);
-				if (field_it == dict.name_to_tag.end()) {
-					throw std::runtime_error("Message '" + m.name + "' references unknown field name: " +
-					                         std::string(fname));
-				}
-				int tag = field_it->second;
+				int tag = ResolveTag(dict, fname, "message field");
 				if (required) {
 					m.required_fields.push_back(tag);
 				} else {
@@ -296,8 +294,6 @@ void FixDictionaryLoader::LoadMessages(FixDictionary &dict, tinyxml2::XMLElement
 // APPLY OVERLAY XML (dialects, custom fields, etc.)
 // ===========================================================
 void FixDictionaryLoader::ApplyOverlay(duckdb::ClientContext &context, FixDictionary &dict, const std::string &path) {
-	tinyxml2::XMLDocument doc;
-
 	// Phase 7.8: Use DuckDB FileSystem to support S3, HTTP, etc.
 	auto &fs = duckdb::FileSystem::GetFileSystem(context);
 	auto handle = fs.OpenFile(path, duckdb::FileOpenFlags::FILE_FLAGS_READ);
@@ -307,10 +303,15 @@ void FixDictionaryLoader::ApplyOverlay(duckdb::ClientContext &context, FixDictio
 	std::string xml_content;
 	xml_content.resize(file_size);
 	handle->Read((void *)xml_content.data(), file_size);
+	ApplyOverlayFromString(dict, xml_content);
+}
+
+void FixDictionaryLoader::ApplyOverlayFromString(FixDictionary &dict, const std::string &xml_content) {
+	tinyxml2::XMLDocument doc;
 
 	// Parse XML from string
 	if (doc.Parse(xml_content.c_str()) != tinyxml2::XML_SUCCESS) {
-		throw std::runtime_error("Failed to parse overlay XML from: " + path);
+		throw std::runtime_error("Failed to parse overlay XML from string");
 	}
 
 	auto *root = doc.RootElement();

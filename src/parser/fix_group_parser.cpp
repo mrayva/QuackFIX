@@ -2,10 +2,191 @@
 #include "duckdb/common/types/value.hpp"
 #include "duckdb/common/types.hpp"
 #include <algorithm>
+#include <limits>
+#include <unordered_set>
+#include <string>
 
 namespace duckdb {
 
 namespace {
+std::string JsonEscape(const std::string &input) {
+	std::string output;
+	output.reserve(input.size() + 2);
+	for (unsigned char c : input) {
+		switch (c) {
+		case '"':
+			output += "\\\"";
+			break;
+		case '\\':
+			output += "\\\\";
+			break;
+		case '\b':
+			output += "\\b";
+			break;
+		case '\f':
+			output += "\\f";
+			break;
+		case '\n':
+			output += "\\n";
+			break;
+		case '\r':
+			output += "\\r";
+			break;
+		case '\t':
+			output += "\\t";
+			break;
+		default:
+			if (c < 0x20) {
+				static const char hex[] = "0123456789abcdef";
+				output += "\\u00";
+				output += hex[c >> 4];
+				output += hex[c & 0x0f];
+			} else {
+				output += static_cast<char>(c);
+			}
+		}
+	}
+	return output;
+}
+
+bool TryParseCount(const ParsedFixMessage::TagValue &value, int &count) {
+	if (!value.data || value.len == 0) {
+		return false;
+	}
+	count = 0;
+	for (size_t i = 0; i < value.len; i++) {
+		char c = value.data[i];
+		if (c < '0' || c > '9' || count > (std::numeric_limits<int>::max() - (c - '0')) / 10) {
+			return false;
+		}
+		count = count * 10 + (c - '0');
+	}
+	return true;
+}
+
+int ParseCount(const ParsedFixMessage::TagValue &value) {
+	int count = 0;
+	return TryParseCount(value, count) ? count : 0;
+}
+
+bool ValidateGroupInstances(const std::vector<std::pair<int, ParsedFixMessage::TagValue>> &tags, size_t &pos,
+                            int count, const FixGroupDef &definition, unsigned depth, std::string &error) {
+	if (depth > 32) {
+		error = "Repeating groups exceed the maximum nesting depth";
+		return false;
+	}
+	if (count > 0 && definition.field_tags.empty()) {
+		error = "Repeating group has no fields in its dictionary definition";
+		return false;
+	}
+	const int delimiter_tag = definition.field_tags.empty() ? 0 : definition.field_tags.front();
+	for (int instance = 0; instance < count; instance++) {
+		if (pos >= tags.size() || tags[pos].first != delimiter_tag) {
+			error = "Repeating group count tag " + std::to_string(definition.count_tag) + " declares " +
+			        std::to_string(count) + " instances, but delimiter tag " + std::to_string(delimiter_tag) +
+			        " is missing for instance " + std::to_string(instance + 1);
+			return false;
+		}
+		bool consumed_field = false;
+		while (pos < tags.size()) {
+			const int tag = tags[pos].first;
+			if (consumed_field && tag == delimiter_tag) {
+				break;
+			}
+			auto subgroup = definition.subgroups.find(tag);
+			if (subgroup != definition.subgroups.end()) {
+				int subgroup_count = 0;
+				if (!TryParseCount(tags[pos].second, subgroup_count)) {
+					error = "Invalid repeating group count in tag " + std::to_string(tag) +
+					        ": expected a non-negative integer";
+					return false;
+				}
+				pos++;
+				if (!ValidateGroupInstances(tags, pos, subgroup_count, *subgroup->second, depth + 1, error)) {
+					return false;
+				}
+				consumed_field = true;
+				continue;
+			}
+			if (std::find(definition.field_tags.begin(), definition.field_tags.end(), tag) == definition.field_tags.end()) {
+				break;
+			}
+			pos++;
+			consumed_field = true;
+		}
+	}
+	if (count == 0 && pos < tags.size() && tags[pos].first == delimiter_tag) {
+		error = "Repeating group count tag " + std::to_string(definition.count_tag) +
+		        " declares zero instances, but delimiter tag " + std::to_string(delimiter_tag) + " is present";
+		return false;
+	}
+	if (count > 0 && pos < tags.size() && tags[pos].first == delimiter_tag) {
+		error = "Repeating group count tag " + std::to_string(definition.count_tag) + " declares " +
+		        std::to_string(count) + " instances, but more instances start with delimiter tag " +
+		        std::to_string(delimiter_tag);
+		return false;
+	}
+	return true;
+}
+
+std::string ParseJsonInstances(const std::vector<std::pair<int, ParsedFixMessage::TagValue>> &tags, size_t &pos,
+                               int count, const FixGroupDef &definition, unsigned depth) {
+	if (depth > 32 || definition.field_tags.empty()) {
+		return "[]";
+	}
+	std::string instances = "[";
+	bool first_instance = true;
+	for (int instance = 0; instance < count && pos < tags.size(); instance++) {
+		if (tags[pos].first != definition.field_tags.front()) {
+			break;
+		}
+		if (!first_instance) {
+			instances += ',';
+		}
+		first_instance = false;
+		std::string fields = "{";
+		std::string groups = "{";
+		bool first_field = true;
+		bool first_group = true;
+		bool have_content = false;
+		while (pos < tags.size()) {
+			const int tag = tags[pos].first;
+			if (have_content && tag == definition.field_tags.front()) {
+				break;
+			}
+			auto subgroup = definition.subgroups.find(tag);
+			if (subgroup != definition.subgroups.end()) {
+				const int subgroup_count = ParseCount(tags[pos].second);
+				pos++;
+				std::string subgroup_instances = ParseJsonInstances(tags, pos, subgroup_count, *subgroup->second, depth + 1);
+				if (!first_group) {
+					groups += ',';
+				}
+				first_group = false;
+				groups += "\"" + std::to_string(tag) + "\":" + subgroup_instances;
+				have_content = true;
+				continue;
+			}
+			if (std::find(definition.field_tags.begin(), definition.field_tags.end(), tag) == definition.field_tags.end()) {
+				break;
+			}
+			if (!first_field) {
+				fields += ',';
+			}
+			first_field = false;
+			const auto &value = tags[pos].second;
+			fields += "\"" + std::to_string(tag) + "\":\"" +
+			          JsonEscape(std::string(value.data, value.len)) + "\"";
+			pos++;
+			have_content = true;
+		}
+		fields += '}';
+		groups += '}';
+		instances += "{\"fields\":" + fields + ",\"groups\":" + groups + "}";
+	}
+	instances += ']';
+	return instances;
+}
 // Sanity bound on repeating group counts - protects against corrupted/malicious
 // NoXXX count fields causing runaway parsing.
 constexpr int kMaxGroupCount = 100;
@@ -26,25 +207,18 @@ int FixGroupParser::GetGroupCount(const std::unordered_map<int, ParsedFixMessage
 	if (tag_it == other_tags.end()) {
 		return 0; // Group not present
 	}
-
-	std::string count_str(tag_it->second.data, tag_it->second.len);
-	try {
-		int count = std::stoi(count_str);
-
-		if (count <= 0) {
-			return 0;
-		}
-		if (count > kMaxGroupCount) {
-			errors.push_back("Group tag " + std::to_string(count_tag) + " count " + std::to_string(count) +
-			                 " exceeds maximum of " + std::to_string(kMaxGroupCount) + "; group dropped");
-			return 0;
-		}
-
-		return count;
-	} catch (...) {
-		errors.push_back("Group tag " + std::to_string(count_tag) + " has invalid count value: '" + count_str + "'");
-		return 0; // Invalid count
+	int count = 0;
+	if (!TryParseCount(tag_it->second, count)) {
+		errors.push_back("Group tag " + std::to_string(count_tag) + " has invalid count value: '" +
+		                 std::string(tag_it->second.data, tag_it->second.len) + "'");
+		return 0;
 	}
+	if (count > kMaxGroupCount) {
+		errors.push_back("Group tag " + std::to_string(count_tag) + " count " + std::to_string(count) +
+		                 " exceeds maximum of " + std::to_string(kMaxGroupCount) + "; group dropped");
+		return 0;
+	}
+	return count;
 }
 
 size_t FixGroupParser::FindCountTagPosition(const std::vector<std::pair<int, ParsedFixMessage::TagValue>> &ordered_tags,
@@ -127,6 +301,10 @@ FixGroupParser::ParseGroupInstances(const std::vector<std::pair<int, ParsedFixMe
 		while (pos < ordered_tags.size()) {
 			int tag = ordered_tags[pos].first;
 
+			// The first declared field is the delimiter that starts every instance.
+			if (!instance_map_entries.empty() && tag == group_field_tags.front()) {
+				break;
+			}
 			// A nested subgroup within this instance - its content isn't exposed in the
 			// `groups` column yet, but its span must still be skipped so later fields and
 			// instances of the outer group don't get misaligned.
@@ -136,9 +314,7 @@ FixGroupParser::ParseGroupInstances(const std::vector<std::pair<int, ParsedFixMe
 				continue;
 			}
 
-			// Check if this tag belongs to the current group
 			if (!IsGroupField(tag, group_field_tags)) {
-				// Not a group field - either another group starts or non-group tag
 				break;
 			}
 
@@ -150,20 +326,15 @@ FixGroupParser::ParseGroupInstances(const std::vector<std::pair<int, ParsedFixMe
 			instance_map_entries.push_back(Value::STRUCT(map_entry));
 
 			pos++;
-
-			// Check if we've seen the first field again (marks next instance)
-			if (pos < ordered_tags.size() && !group_field_tags.empty() &&
-			    ordered_tags[pos].first == group_field_tags[0]) {
-				break;
-			}
 		}
 
-		if (!instance_map_entries.empty()) {
-			// Create MAP for this instance
-			auto instance_map_type = LogicalType::MAP(LogicalType::INTEGER, LogicalType::VARCHAR);
-			auto instance_child_type = ListType::GetChildType(instance_map_type);
-			group_instances.push_back(Value::MAP(instance_child_type, instance_map_entries));
+		if (instance_map_entries.empty()) {
+			break;
 		}
+		// Create MAP for this instance
+		auto instance_map_type = LogicalType::MAP(LogicalType::INTEGER, LogicalType::VARCHAR);
+		auto instance_child_type = ListType::GetChildType(instance_map_type);
+		group_instances.push_back(Value::MAP(instance_child_type, instance_map_entries));
 	}
 
 	return group_instances;
@@ -236,6 +407,88 @@ Value FixGroupParser::ParseGroups(const ParsedFixMessage &parsed, const FixDicti
 	    LogicalType::INTEGER, LogicalType::LIST(LogicalType::MAP(LogicalType::INTEGER, LogicalType::VARCHAR)));
 	auto outer_child_type = ListType::GetChildType(outer_map_type);
 	return Value::MAP(outer_child_type, outer_map_entries);
+}
+
+Value FixGroupParser::ParseGroupsJson(const ParsedFixMessage &parsed, const FixDictionary &dict) {
+	if (parsed.all_tags_ordered.empty() || parsed.msg_type == nullptr || parsed.msg_type_len == 0) {
+		return Value();
+	}
+	auto message = dict.messages.find(std::string(parsed.msg_type, parsed.msg_type_len));
+	if (message == dict.messages.end()) {
+		return Value();
+	}
+	std::vector<std::pair<int, std::shared_ptr<FixGroupDef>>> definitions(message->second.groups.begin(),
+	                                                                     message->second.groups.end());
+	std::sort(definitions.begin(), definitions.end(), [](const auto &left, const auto &right) {
+		return left.first < right.first;
+	});
+	std::string output = "{";
+	bool first_group = true;
+	std::vector<std::string> ignored_errors; // malformed counts are reported by ValidateCounts
+	for (const auto &entry : definitions) {
+		int count = GetGroupCount(parsed.other_tags, entry.first, ignored_errors);
+		if (count <= 0) {
+			continue;
+		}
+		size_t count_position = FindCountTagPosition(parsed.all_tags_ordered, entry.first);
+		if (count_position >= parsed.all_tags_ordered.size()) {
+			continue;
+		}
+		size_t pos = count_position + 1;
+		std::string instances = ParseJsonInstances(parsed.all_tags_ordered, pos, count, *entry.second, 0);
+		if (instances == "[]") {
+			continue;
+		}
+		if (!first_group) {
+			output += ',';
+		}
+		first_group = false;
+		output += "\"" + std::to_string(entry.first) + "\":" + instances;
+	}
+	output += '}';
+	if (first_group) {
+		return Value();
+	}
+	return Value(output);
+}
+
+bool FixGroupParser::ValidateCounts(const ParsedFixMessage &parsed, const FixDictionary &dict, std::string &error) {
+	if (!parsed.msg_type || parsed.msg_type_len == 0) {
+		return true;
+	}
+	auto message = dict.messages.find(std::string(parsed.msg_type, parsed.msg_type_len));
+	if (message == dict.messages.end()) {
+		return true;
+	}
+	std::vector<std::pair<int, std::shared_ptr<FixGroupDef>>> definitions(message->second.groups.begin(),
+	                                                                     message->second.groups.end());
+	std::sort(definitions.begin(), definitions.end(), [](const auto &left, const auto &right) {
+		return left.first < right.first;
+	});
+	for (const auto &group : definitions) {
+		size_t count_position = FindCountTagPosition(parsed.all_tags_ordered, group.first);
+		if (count_position >= parsed.all_tags_ordered.size()) {
+			continue;
+		}
+		int count = 0;
+		if (!TryParseCount(parsed.all_tags_ordered[count_position].second, count)) {
+			error = "Invalid repeating group count in tag " + std::to_string(group.first) +
+			        ": expected a non-negative integer";
+			return false;
+		}
+		auto duplicate_count = std::find_if(parsed.all_tags_ordered.begin() + count_position + 1,
+		                                   parsed.all_tags_ordered.end(),
+		                                   [&](const auto &tag) { return tag.first == group.first; });
+		if (duplicate_count != parsed.all_tags_ordered.end()) {
+			error = "Duplicate top-level repeating group count tag " + std::to_string(group.first);
+			return false;
+		}
+		size_t pos = count_position + 1;
+		if (!ValidateGroupInstances(parsed.all_tags_ordered, pos, count, *group.second, 0, error)) {
+			return false;
+		}
+	}
+	return true;
 }
 
 } // namespace duckdb

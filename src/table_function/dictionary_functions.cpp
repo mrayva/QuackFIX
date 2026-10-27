@@ -139,7 +139,7 @@ TableFunction FixFieldsFunction::GetFunction() {
 	TableFunction func("fix_fields", arguments, FixFieldsScan, FixFieldsBind, FixFieldsInitGlobal);
 	func.name = "fix_fields";
 	// Accept 0 or 1 VARCHAR argument for dictionary path
-	func.varargs = LogicalType(LogicalTypeId::VARCHAR);
+	func.GetSignature().AddArgs("args", LogicalType(LogicalTypeId::VARCHAR));
 	return func;
 }
 
@@ -323,7 +323,7 @@ TableFunction FixMessageFieldsFunction::GetFunction() {
 	                   FixMessageFieldsInitGlobal);
 	func.name = "fix_message_fields";
 	// Accept 0 or 1 VARCHAR argument for dictionary path
-	func.varargs = LogicalType(LogicalTypeId::VARCHAR);
+	func.GetSignature().AddArgs("args", LogicalType(LogicalTypeId::VARCHAR));
 	return func;
 }
 
@@ -500,7 +500,7 @@ TableFunction FixGroupsFunction::GetFunction() {
 	TableFunction func("fix_groups", arguments, FixGroupsScan, FixGroupsBind, FixGroupsInitGlobal);
 	func.name = "fix_groups";
 	// Accept 0 or 1 VARCHAR argument for dictionary path
-	func.varargs = LogicalType(LogicalTypeId::VARCHAR);
+	func.GetSignature().AddArgs("args", LogicalType(LogicalTypeId::VARCHAR));
 	return func;
 }
 

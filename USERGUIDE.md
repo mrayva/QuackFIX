@@ -38,7 +38,7 @@ SELECT * FROM read_fix('path/to/file.fix');
 │ D       │ SENDER       │ TARGET       │         1 │ 2023-12-15 10:30:00 │ … │    NULL │ NULL    │ {10=000, 59=0, 40=…  │ NULL                 │ 8=FIX.4.4|9=178|35…  │ NULL        │
 │ 8       │ TARGET       │ SENDER       │         2 │ 2023-12-15 10:30:01 │ … │   100.0 │ NULL    │ {10=000, 9=195, 8=…  │ NULL                 │ 8=FIX.4.4|9=195|35…  │ NULL        │
 ├─────────┴──────────────┴──────────────┴───────────┴─────────────────────┴───┴─────────┴─────────┴──────────────────────┴──────────────────────┴──────────────────────┴─────────────┤
-│ 2 rows                                                                                                                                                       23 columns (11 shown) │
+│ 2 rows                                                                                                                                                       24 columns (11 shown) │
 └────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -145,6 +145,17 @@ SELECT * FROM read_fix('logs/trading.fix', delimiter='\x01');
 |---------|--------|--------|
 | D | MSFT | 380.25 |
 | 8 | MSFT | 380.25 |
+
+#### validate_fix (optional)
+**Type:** `BOOLEAN`
+**Default:** `false`
+**Description:** Validate the standard envelope tags (8, 9, and 10), their order, BodyLength, and CheckSum. Disable this option for fragment captures or messages that do not contain a complete FIX envelope. Invalid frames are retained and described in `parse_error`.
+
+```sql
+SELECT raw_message, parse_error
+FROM read_fix('logs/trading.fix', validate_fix=true)
+WHERE parse_error IS NOT NULL;
+```
 
 #### rtags (optional)
 **Type:** `LIST(VARCHAR)`  
@@ -270,7 +281,7 @@ WHERE prefix IS NOT NULL;
 
 ### Output Schema
 
-The `read_fix()` function returns **23-24 columns** (depending on the `prefix` parameter) plus any custom tag columns:
+The `read_fix()` function returns **24-25 columns** (depending on the `prefix` parameter) plus any custom tag columns:
 
 #### Hot Tag Columns (19 fields)
 
@@ -298,15 +309,16 @@ These are the most commonly used FIX fields, parsed from every message:
 | `LastQty` | DOUBLE | 32 | Last execution quantity |
 | `Text` | VARCHAR | 58 | Free-form text |
 
-#### Special Columns (4-5 fields)
+#### Special Columns (5-6 fields)
 
 | Column | Type | Description |
 |--------|------|-------------|
 | `tags` | MAP(INTEGER, VARCHAR) | All non-hot tags as key-value pairs |
-| `groups` | MAP(INTEGER, LIST(MAP(INTEGER, VARCHAR))) | Repeating groups (nested structure) |
+| `groups` | MAP(INTEGER, LIST(MAP(INTEGER, VARCHAR))) | Repeating groups in the flat map format |
 | `raw_message` | VARCHAR | Original FIX message |
 | `parse_error` | VARCHAR | Parse/conversion errors (NULL if OK) |
 | `prefix` | VARCHAR | Message prefix (only when prefix=true, NULL if no prefix) |
+| `groups_json` | VARCHAR | Nested repeating groups as JSON (NULL when none are present) |
 | *Custom tags* | VARCHAR | Columns added via rtags/tagIds parameters |
 
 #### Column Type Notes
@@ -324,7 +336,8 @@ These are the most commonly used FIX fields, parsed from every message:
 
 **MAP Types:**
 - `tags`: Access with `tags[tag_number]`, e.g., `tags[60]`
-- `groups`: Nested map, access with `groups[count_tag][index][field_tag]`
+- `groups`: Flat map, access with `groups[count_tag][index][field_tag]`
+- `groups_json`: Nested groups as JSON; access JSON fields with DuckDB's JSON functions
 
 ---
 
@@ -749,7 +762,7 @@ ORDER BY field_count DESC;
 
 ### Working with Repeating Groups
 
-Repeating groups are nested structures in FIX messages (e.g., multiple parties, market data entries).
+Repeating groups can be nested in FIX messages (e.g., parties with nested sub-party groups). `groups` keeps the established flat map format; `groups_json` preserves the nested hierarchy.
 
 **Structure:**
 ```
@@ -789,6 +802,13 @@ WHERE groups[453] IS NOT NULL;
 -- Access entire group
 SELECT MsgType, Symbol, groups[453] as Parties
 FROM read_fix('logs/trading.fix');
+```
+
+```sql
+-- Preserve nested groups and access the hierarchy as JSON
+SELECT groups_json
+FROM read_fix('logs/trading.fix')
+WHERE groups_json IS NOT NULL;
 ```
 
 **Output:**

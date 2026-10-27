@@ -15,6 +15,7 @@ public:
 	static FixDictionary LoadBase(duckdb::ClientContext &context, const std::string &path);
 	static FixDictionary LoadFromString(const std::string &xml_content);
 	static void ApplyOverlay(duckdb::ClientContext &context, FixDictionary &dict, const std::string &path);
+	static void ApplyOverlayFromString(FixDictionary &dict, const std::string &xml_content);
 
 private:
 	// Loads <fields>/<components>/<messages> from an already-parsed document; shared by

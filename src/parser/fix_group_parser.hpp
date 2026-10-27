@@ -16,6 +16,10 @@ public:
 	// Any truncated/invalid group counts are appended to `errors` rather than silently dropped
 	static Value ParseGroups(const ParsedFixMessage &parsed, const FixDictionary &dict, bool needs_groups,
 	                         std::vector<std::string> &errors);
+	// Return a recursively nested JSON representation of repeating groups.
+	static Value ParseGroupsJson(const ParsedFixMessage &parsed, const FixDictionary &dict);
+	// Validate any present repeating-group count tags and explain malformed values.
+	static bool ValidateCounts(const ParsedFixMessage &parsed, const FixDictionary &dict, std::string &error);
 
 private:
 	// Parse instances of a single group
